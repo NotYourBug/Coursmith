@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="智课工坊：在手机和电脑上都能顺畅学习的课程交付站">
+  <title>{% block title %}智课工坊课程站{% endblock %}</title>
+  <link rel="stylesheet" href="/static/site.css">
+</head>
+<body>
+  <header class="site-header"><a class="brand" href="/">智课工坊</a><nav><a href="/">课程</a><a href="/access">兑换课程</a><a href="/help">帮助</a></nav></header>
+  <main class="shell">{% block content %}{% endblock %}</main>
+  <footer class="site-footer"><p>内容由人工审核后交付，部分课程内容由 AI 辅助生成。</p><a class="support" href="/help">联系支持</a></footer>
+</body>
+</html>

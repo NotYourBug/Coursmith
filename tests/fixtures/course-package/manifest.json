@@ -1,0 +1,17 @@
+{
+  "course_id": "fixture-course",
+  "slug": "fixture-course",
+  "title": "Fixture Course",
+  "category": "technical",
+  "version": "0.1.0",
+  "status": "published",
+  "chapter_count": 1,
+  "chapters": [
+    {"number": 1, "title": "第一章", "path": "chapters/01.html", "free_preview": true, "duration_minutes": 10}
+  ],
+  "free_chapters": [1],
+  "contains_ai_generated_content": true,
+  "ai_disclosure": "本课程部分内容由人工智能辅助生成，并经过人工审核与编辑。",
+  "source_manifest": "SOURCES.txt",
+  "license_file": "LICENSE.txt"
+}

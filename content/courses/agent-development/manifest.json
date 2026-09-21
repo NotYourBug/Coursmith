@@ -1,0 +1,26 @@
+{
+  "course_id": "agent-development",
+  "slug": "agent-development",
+  "title": "Agent 开发入门到实战",
+  "category": "ai-development",
+  "version": "0.1.0",
+  "status": "published",
+  "chapter_count": 10,
+  "chapters": [
+    {"number": 1, "title": "Agent 与大模型：能力边界与工作流", "path": "chapters/01.html", "free_preview": true, "duration_minutes": 35},
+    {"number": 2, "title": "Prompt 与结构化输出：让模型稳定工作", "path": "chapters/02.html", "free_preview": false, "duration_minutes": 40},
+    {"number": 3, "title": "工具调用：让 Agent 连接真实世界", "path": "chapters/03.html", "free_preview": false, "duration_minutes": 45},
+    {"number": 4, "title": "Agent 循环：观察、决策与执行", "path": "chapters/04.html", "free_preview": false, "duration_minutes": 45},
+    {"number": 5, "title": "上下文与记忆：管理有限的信息窗口", "path": "chapters/05.html", "free_preview": false, "duration_minutes": 40},
+    {"number": 6, "title": "RAG 入门：连接外部知识库", "path": "chapters/06.html", "free_preview": false, "duration_minutes": 50},
+    {"number": 7, "title": "任务规划与多 Agent 协作", "path": "chapters/07.html", "free_preview": false, "duration_minutes": 45},
+    {"number": 8, "title": "评测与可观测性：知道 Agent 做得怎样", "path": "chapters/08.html", "free_preview": false, "duration_minutes": 45},
+    {"number": 9, "title": "安全、成本与失败处理", "path": "chapters/09.html", "free_preview": false, "duration_minutes": 45},
+    {"number": 10, "title": "综合实战：搭建一个可交付的 Agent 应用", "path": "chapters/10.html", "free_preview": false, "duration_minutes": 60}
+  ],
+  "free_chapters": [1],
+  "contains_ai_generated_content": true,
+  "ai_disclosure": "本课程部分内容由人工智能辅助生成，并经过人工审核、技术校验与编辑；涉及的模型能力和 SDK 版本可能随供应商更新。",
+  "source_manifest": "SOURCES.txt",
+  "license_file": "LICENSE.txt"
+}

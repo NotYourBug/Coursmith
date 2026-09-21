@@ -1,0 +1,3 @@
+{% extends "base.html" %}
+{% block title %}{{ category }}｜智课工坊{% endblock %}
+{% block content %}<section class="page-heading"><p class="eyebrow">CATEGORY</p><h1>{{ category }}</h1><p>从这一分类中挑选适合你的学习路径。</p></section><div class="card-grid">{% for course in courses %}<a class="course-card" href="/courses/{{ course.slug }}"><span class="pill">{{ course.category }}</span><h2>{{ course.title }}</h2><p>{{ course.chapter_count }} 个章节 · 版本 {{ course.version }}</p></a>{% endfor %}</div>{% endblock %}

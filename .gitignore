@@ -1,0 +1,41 @@
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+ENV/
+
+# Local tooling and generated metadata
+.codegraph/
+.uv-cache/
+.uv-python/
+.superpowers/sdd/
+
+# Generated course artifacts and runtime data
+content/courses/*
+!content/
+!content/courses/
+!content/courses/agent-development/
+!content/courses/agent-development/**
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.png
+*.zip
+*.pdf
+
+# Existing local-only assets/config variants
+tishici.txt
+config.local.json

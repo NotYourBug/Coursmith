@@ -1,0 +1,14 @@
+{
+    "base_url": "https://api.deepseek.com/",
+    "api_key": "",
+    "browser_path": "D:\\Program Files\\chromedriver-win64\\chromedriver.exe",
+    "question_gen_chapter": "你是一名资深课程架构师、教学设计专家。现在需要为课程《aaaaaaaaaa》生成一套高质量课程大纲。\n\n请严格遵守以下要求：\n1. 只输出一个 Python dict，不要解释，不要 markdown 代码块。\n2. 字典格式固定为：\n{\n    \"name\":\"英文课程代号_下划线风格\",\n    \"home\":\"《课程中文名》\",\n    \"question\":[\n        \"1、章节标题\",\n        \"2、章节标题\"\n    ]\n}\n3. question 必须正好为 bbbbbbbbbb 节。\n4. 每个章节标题尽量采用\"主标题：关键词1、关键词2、关键词3\"的课程目录风格。\n5. 主标题必须简洁、专业，建议 4-10 个汉字；冒号后补充 2-4 个关键词即可，不要写成长句。\n6. 章节之间要有循序渐进关系：基础认知 -> 核心概念 -> 方法流程 -> 实战应用 -> 进阶专题。\n7. 标题要更像优秀培训教材目录，而不是普通问答句；多用\"基础 / 原理 / 架构 / 流程 / 实战 / 案例 / 优化 / 运维 / 排障 / 总结\"等课程化表述。\n8. 如果适合工程技术类课程，章节组织尽量体现\"概述、基础、模型、方法、实现、案例、优化、总结\"的层次。\n9. 每个章节的关键词要能直接用于课程目录卡片上的标签展示，因此必须短、准、清晰。\n10. 不要生成\"第一节课我们来学习……\"这种口语化标题。\n11. 不要生成过于相似的标题，不要出现明显重复。\n12. 输出内容必须是中文课程目录，编号从 1 开始。\n\n请直接输出 dict。",
+    "question_gen_catalog": "该字段当前仅用于兼容旧配置，实际课程目录页由本地脚本直接生成。",
+    "prompt_template_version": 5,
+    "style_reference_mode": "builtin",
+    "style_reference_text": "",
+    "style_reference_file": "",
+    "lessons_per_course": 30,
+    "feishu_app_id": "",
+    "feishu_app_secret": ""
+}

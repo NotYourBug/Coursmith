@@ -1,0 +1,8 @@
+课程内容主要依据以下公开资料整理，正式销售前应再次核对版本与许可证：
+- OpenAI API 官方文档：https://platform.openai.com/docs
+- Anthropic API 官方文档：https://docs.anthropic.com/
+- Model Context Protocol 官方文档：https://modelcontextprotocol.io/
+- OWASP Top 10 for LLM Applications：https://owasp.org/www-project-top-10-for-large-language-model-applications/
+- Python 官方文档：https://docs.python.org/3/
+
+本课程正文为原创组织与讲解，代码示例仅用于教学演示。
