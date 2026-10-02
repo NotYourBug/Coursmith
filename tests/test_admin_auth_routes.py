@@ -272,3 +272,13 @@ def test_unsupported_cli_password_argument_is_not_echoed(capsys):
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["init-admin", "--password", "argv-secret"])
     assert "argv-secret" not in capsys.readouterr().err
+
+
+def test_admin_method_rejections_are_private_and_correlated(admin_client):
+    for method, path in [("get", "/admin/logout"), ("delete", "/admin/login"),
+                         ("put", "/admin/account/password")]:
+        response = getattr(admin_client, method)(path)
+        assert response.status_code == 405
+        assert response.headers.get("cache-control") == "no-store"
+        assert response.headers["x-request-id"] in response.text
+        assert response.headers["allow"]

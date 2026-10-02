@@ -52,6 +52,30 @@ def _login_page(request, *, error=None, username=""):
 class AdminRoute(APIRoute):
     """Keep redirects, errors and successful admin responses private by default."""
 
+    @staticmethod
+    def _private_response(request, response):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Request-ID"] = request.state.request_id
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'self'; img-src 'self'; "
+            f"script-src {request.app.state.settings.site_origin}/static/admin/; "
+            "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    async def handle(self, scope, receive, send):
+        # Starlette rejects unsupported methods before get_route_handler runs.
+        if self.methods and scope["method"] not in self.methods:
+            request = Request(scope, receive=receive)
+            request.state.request_id = secrets.token_hex(16)
+            response = _render(request, "error.html", status=405,
+                               error=BusinessError("method_not_allowed", "This method is not allowed.", 405))
+            response.headers["Allow"] = ", ".join(sorted(self.methods))
+            await self._private_response(request, response)(scope, receive, send)
+        else:
+            await super().handle(scope, receive, send)
+
     def get_route_handler(self):
         handler = super().get_route_handler()
 
@@ -65,15 +89,7 @@ class AdminRoute(APIRoute):
                 else:
                     response = _render(request, "error.html", status=error.status_code, error=error)
                 response.headers.update(getattr(error, "headers", {}))
-            response.headers["Cache-Control"] = "no-store"
-            response.headers["X-Request-ID"] = request.state.request_id
-            response.headers["Content-Security-Policy"] = (
-                "default-src 'none'; style-src 'self'; img-src 'self'; "
-                f"script-src {request.app.state.settings.site_origin}/static/admin/; "
-                "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
-            )
-            response.headers["X-Content-Type-Options"] = "nosniff"
-            return response
+            return self._private_response(request, response)
 
         return protected
 
