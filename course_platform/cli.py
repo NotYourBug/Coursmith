@@ -3,19 +3,31 @@
 from __future__ import annotations
 
 import argparse
+import getpass
+import hashlib
 import json
+import secrets
+import socket
 from pathlib import Path
 
 from .access import AccessService
+from .admin.auth import AdminService
 from .content import load_course_package, publish_course, validate_course_package
 from .database import check_database, migrate_database, sync_course
-from .domain import BusinessError
+from .domain import Actor, BusinessError
 from .settings import load_settings
 
 
+class _PrivateArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        # Invalid argv may contain a mistakenly supplied password.
+        super().error("Invalid command arguments; use --help for supported options.")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="course-platform")
+    parser = _PrivateArgumentParser(prog="course-platform")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("init-admin", help="initialize the single owner using interactive prompts")
 
     validate = subparsers.add_parser("validate", help="validate a course package")
     validate.add_argument("course_dir", type=Path)
@@ -36,6 +48,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def authenticate_owner(service: AdminService) -> Actor:
+    """Credential-verified identity for later owner commands; no selectable ID."""
+    request_id = secrets.token_hex(16)
+    grant = service.login(input("Owner account: "), getpass.getpass("Password: "),
+                          source="cli:" + hashlib.sha256(socket.gethostname().encode()).hexdigest(),
+                          request_id=request_id)
+    session = service.require_session(grant.token, request_id=request_id)
+    actor = Actor(session.admin_id, request_id)
+    service.logout(grant.token, actor)
+    return actor
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "validate":
@@ -44,6 +68,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report.ok else 1
 
     settings = load_settings()
+    if args.command == "init-admin":
+        try:
+            username = input("Owner account: ")
+            password = getpass.getpass("Password (12–128 characters): ")
+            confirmation = getpass.getpass("Confirm password: ")
+            if password != confirmation:
+                raise BusinessError("password_mismatch", "Password confirmation does not match.", 400)
+            admin_id = AdminService(settings.database_path).initialize_owner(username, password)
+            print(json.dumps({"initialized": True, "admin_id": admin_id}))
+            return 0
+        except BusinessError as exc:
+            print(json.dumps({"error": exc.code, "message": exc.message}, ensure_ascii=False))
+            return 1
     if args.command == "migrate":
         try:
             if args.check_only:

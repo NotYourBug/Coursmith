@@ -28,10 +28,11 @@ class AuditEvent:
 # No arbitrary titles, notes, credentials, hashes, HTML or request objects.
 # Each new action must explicitly declare the metadata its consumer needs.
 ACTION_FIELDS = {
+    "auth.initialize": {"error_code"},
     "security.rate_limit": {"error_code"},
     "security.csrf": {"error_code"},
     "auth.login": {"error_code"},
-    "auth.logout": set(),
+    "auth.logout": {"error_code"},
     "admin.password_change": {"revoked_sessions", "revision", "error_code"},
     "category.create": {"revision", "error_code"},
     "category.update": {"enabled", "sort_order", "revision", "error_code"},

@@ -18,6 +18,7 @@ dependencies = [
   "openai>=1.60,<3",
   "selenium>=4.27,<5",
   "tinycss2>=1.4,<2",
+  "pwdlib[argon2]>=0.2,<1",
 ]
 
 [project.optional-dependencies]

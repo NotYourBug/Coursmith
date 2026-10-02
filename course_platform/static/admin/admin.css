@@ -1,0 +1,17 @@
+:root { color-scheme: light; font-family: system-ui, sans-serif; color: #182a31; background: #f3f6f5; }
+* { box-sizing: border-box; }
+body { margin: 0; line-height: 1.6; }
+header { padding: 1.25rem 5%; background: #fff; border-bottom: 1px solid #cbd6d3; display: flex; flex-wrap: wrap; align-items: center; gap: 1.5rem; }
+a { color: #155e56; text-underline-offset: .2em; }
+.brand { font-weight: 700; font-size: 1.15rem; }
+nav { display: flex; flex-wrap: wrap; gap: 1.25rem; }
+header form { margin-left: auto; }
+main { max-width: 56rem; margin: 2rem auto; padding: 2rem; background: #fff; border: 1px solid #cbd6d3; border-radius: .5rem; }
+h1 { line-height: 1.3; }
+.account-form { max-width: 30rem; display: grid; gap: .75rem; }
+input { width: 100%; padding: .75rem; font: inherit; border: 1px solid #637a73; border-radius: .25rem; }
+button { min-height: 44px; padding: .6rem 1rem; font: inherit; color: #fff; background: #155e56; border: 0; border-radius: .25rem; cursor: pointer; }
+:focus-visible { outline: 3px solid #b25918; outline-offset: 3px; }
+.error { padding: 1rem; border-left: 4px solid #a12323; background: #fff2ef; overflow-wrap: anywhere; }
+footer { text-align: center; padding: 1rem; color: #465f56; }
+@media (max-width: 600px) { main { margin: 1rem; padding: 1.25rem; } header form { margin-left: 0; } }
