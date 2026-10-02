@@ -101,6 +101,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         content_root=content_root,
         database_path=database_path,
         session_ttl_hours=session_ttl_hours,
-        environment=values.get("COURSE_ENVIRONMENT", "development").strip()
-        or "development",
+        environment=(
+            values.get("COURSE_ENVIRONMENT", "development").strip().lower()
+            or "development"
+        ),
     )

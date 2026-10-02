@@ -56,3 +56,15 @@ def test_non_positive_session_ttl_is_rejected(tmp_path):
         assert "greater than zero" in str(exc)
     else:
         raise AssertionError("expected invalid session TTL to be rejected")
+
+
+def test_environment_name_is_normalized_for_security_checks(tmp_path):
+    settings = load_settings(
+        {
+            "COURSE_ENVIRONMENT": " Production ",
+            "COURSE_CONTENT_ROOT": str(tmp_path / "content"),
+            "COURSE_DATABASE": str(tmp_path / "course.db"),
+        }
+    )
+
+    assert settings.environment == "production"

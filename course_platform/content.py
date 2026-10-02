@@ -24,6 +24,11 @@ _STYLESHEET_RE = re.compile(
     re.I,
 )
 _IMAGE_SRC_RE = re.compile(r"<img\b[^>]*\bsrc\s*=\s*['\"]([^'\"]+)", re.I)
+_SCRIPT_TAG_RE = re.compile(r"<script\b", re.I)
+_ACTIVE_TAG_RE = re.compile(r"<(?:iframe|object|embed|base)\b", re.I)
+_EVENT_HANDLER_RE = re.compile(r"\son[a-z0-9_-]+\s*=", re.I)
+_JAVASCRIPT_URL_RE = re.compile(r"(?:href|src|action)\s*=\s*['\"]\s*javascript:", re.I)
+_REMOTE_CSS_RE = re.compile(r"(?:@import\s+|url\s*\(\s*['\"]?)(?:https?:)?//", re.I)
 
 
 def _safe_relative_path(value: str) -> str:
@@ -118,6 +123,13 @@ class CourseManifest(BaseModel):
             raise ValueError("chapter numbers must be unique")
         if not set(self.free_chapters).issubset(numbers):
             raise ValueError("free_chapters must reference existing chapters")
+        preview_numbers = {
+            chapter.number for chapter in self.chapters if chapter.free_preview
+        }
+        if set(self.free_chapters) != preview_numbers:
+            raise ValueError(
+                "free_chapters must exactly match chapters marked free_preview"
+            )
         if self.contains_ai_generated_content and not self.ai_disclosure.strip():
             raise ValueError("ai_disclosure is required when AI content is present")
         return self
@@ -176,7 +188,36 @@ def _check_external_resources(file_path: Path, text: str) -> list[str]:
     for value in _IMAGE_SRC_RE.findall(text):
         if _REMOTE_RE.search(value):
             errors.append(f"{file_path.name}: external image is not allowed: {value}")
+    if _SCRIPT_TAG_RE.search(text):
+        errors.append(f"{file_path.name}: script elements are not allowed")
+    if _ACTIVE_TAG_RE.search(text):
+        errors.append(f"{file_path.name}: embedded active content is not allowed")
+    if _EVENT_HANDLER_RE.search(text):
+        errors.append(f"{file_path.name}: inline event handlers are not allowed")
+    if _JAVASCRIPT_URL_RE.search(text):
+        errors.append(f"{file_path.name}: javascript URLs are not allowed")
+    if _REMOTE_CSS_RE.search(text):
+        errors.append(f"{file_path.name}: remote CSS resources are not allowed")
     return errors
+
+
+def _optional_files(root: Path, directory: str) -> list[Path]:
+    optional_root = root / directory
+    if not optional_root.exists():
+        return []
+    if optional_root.is_symlink() or not optional_root.is_dir():
+        raise ValueError(f"{directory} must be a real directory inside the package")
+    files: list[Path] = []
+    resolved_root = root.resolve()
+    for candidate in optional_root.rglob("*"):
+        if candidate.is_symlink():
+            raise ValueError(f"symbolic links are not allowed: {candidate.relative_to(root)}")
+        resolved = candidate.resolve()
+        if resolved_root not in resolved.parents:
+            raise ValueError(f"path escapes package root: {candidate.relative_to(root)}")
+        if candidate.is_file():
+            files.append(candidate)
+    return files
 
 
 def _check_html(file_path: Path) -> list[str]:
@@ -205,12 +246,21 @@ def validate_course_package(path: Path) -> ValidationReport:
     manifest = package.manifest
     required = ["index.html", manifest.source_manifest, manifest.license_file]
     for relative in required:
-        candidate = _resolved_child(root, relative)
-        if not candidate.is_file():
-            errors.append(f"required file is missing: {relative}")
+        try:
+            unresolved = root / relative
+            candidate = _resolved_child(root, relative)
+            if unresolved.is_symlink():
+                errors.append(f"symbolic links are not allowed: {relative}")
+            elif not candidate.is_file():
+                errors.append(f"required file is missing: {relative}")
+        except ValueError as exc:
+            errors.append(str(exc))
 
     for chapter, chapter_file in zip(manifest.chapters, package.chapter_files):
-        if not chapter_file.is_file():
+        unresolved = root / chapter.path
+        if unresolved.is_symlink():
+            errors.append(f"symbolic links are not allowed: {chapter.path}")
+        elif not chapter_file.is_file():
             errors.append(f"chapters/{chapter.number:02d}.html is missing: {chapter.path}")
         else:
             errors.extend(_check_html(chapter_file))
@@ -218,15 +268,18 @@ def validate_course_package(path: Path) -> ValidationReport:
     index_file = root / "index.html"
     if index_file.is_file():
         errors.extend(_check_html(index_file))
+    for optional_dir in ("assets", "downloads"):
+        try:
+            _optional_files(root, optional_dir)
+        except ValueError as exc:
+            errors.append(str(exc))
     if manifest.status == "published" and not manifest.free_chapters:
         warnings.append("published course has no free preview chapter")
     return ValidationReport(ok=not errors, errors=errors, warnings=warnings)
 
 
 def _copy_if_present(source: Path, target: Path) -> None:
-    if source.is_dir():
-        shutil.copytree(source, target)
-    elif source.is_file():
+    if source.is_file():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 
@@ -255,12 +308,20 @@ def publish_course(
         raise FileExistsError(f"course slug already exists: {manifest.slug}")
     temporary = Path(tempfile.mkdtemp(prefix=f".{manifest.slug}.", dir=content_root))
     try:
-        for relative in ("manifest.json", "index.html", manifest.source_manifest, manifest.license_file):
+        for relative in (
+            "manifest.json",
+            "index.html",
+            manifest.source_manifest,
+            manifest.license_file,
+            "CHANGELOG.md",
+        ):
             _copy_if_present(source_dir / relative, temporary / relative)
         for chapter in manifest.chapters:
             _copy_if_present(source_dir / chapter.path, temporary / chapter.path)
         for optional_dir in ("assets", "downloads"):
-            _copy_if_present(source_dir / optional_dir, temporary / optional_dir)
+            for source in _optional_files(source_dir, optional_dir):
+                relative = source.relative_to(source_dir)
+                _copy_if_present(source, temporary / relative)
         os.replace(temporary, target)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)

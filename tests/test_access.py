@@ -20,7 +20,12 @@ def access_service(tmp_path):
         status="published",
         chapter_count=2,
         chapters=[
-            ChapterManifest(number=1, title="第一章", path="chapters/01.html"),
+            ChapterManifest(
+                number=1,
+                title="第一章",
+                path="chapters/01.html",
+                free_preview=True,
+            ),
             ChapterManifest(number=2, title="第二章", path="chapters/02.html"),
         ],
         free_chapters=[1],
@@ -64,5 +69,38 @@ def test_progress_is_scoped_to_session_and_course(access_service):
     session = access_service.redeem_access_code(code, "agent-development")
 
     access_service.record_progress(session.session_id, "agent-development", 2, True)
+
+    assert access_service.get_progress(session.session_id, "agent-development") == {2: True}
+
+
+def test_resyncing_course_does_not_delete_existing_progress(access_service, tmp_path):
+    code = access_service.create_access_code("agent-development")
+    session = access_service.redeem_access_code(code, "agent-development")
+    access_service.record_progress(session.session_id, "agent-development", 2, True)
+    manifest = CourseManifest(
+        course_id="agent-development",
+        slug="agent-development",
+        title="Agent 开发入门到实战",
+        category="ai-development",
+        version="0.1.1",
+        status="published",
+        chapter_count=2,
+        chapters=[
+            ChapterManifest(
+                number=1,
+                title="第一章（更新）",
+                path="chapters/01.html",
+                free_preview=True,
+            ),
+            ChapterManifest(number=2, title="第二章（更新）", path="chapters/02.html"),
+        ],
+        free_chapters=[1],
+        contains_ai_generated_content=True,
+        ai_disclosure="部分内容由人工智能辅助生成，并经过人工审核。",
+        source_manifest="SOURCES.txt",
+        license_file="LICENSE.txt",
+    )
+
+    sync_course(manifest, tmp_path / "agent-development", access_service.database_path)
 
     assert access_service.get_progress(session.session_id, "agent-development") == {2: True}

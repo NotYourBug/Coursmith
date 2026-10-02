@@ -1,7 +1,7 @@
 import zipfile
 from pathlib import Path
 
-from course_platform.export import export_course_pdf, export_course_zip
+from course_platform.export import _build_print_document, export_course_pdf, export_course_zip
 
 
 def test_zip_export_contains_manifest_sources_and_license(fixture_package, tmp_path):
@@ -25,3 +25,10 @@ def test_pdf_export_requires_a_valid_course_package(fixture_package, tmp_path, m
 
     assert output == tmp_path / "fixture.pdf"
     assert output.read_bytes().startswith(b"%PDF")
+
+
+def test_pdf_print_document_contains_chapter_content(fixture_package):
+    document = _build_print_document(fixture_package)
+
+    assert "第一章" in document
+    assert "课程内容" in document

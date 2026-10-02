@@ -77,3 +77,31 @@ def test_external_resources_block_publish(fixture_package):
 
     assert report.ok is False
     assert any("external" in error for error in report.errors)
+
+
+def test_inline_script_and_event_handler_block_publish(fixture_package):
+    html_path = fixture_package / "chapters" / "01.html"
+    html_path.write_text(
+        "<!doctype html><html><head><title>unsafe</title></head>"
+        '<body onload="steal()"><script>steal()</script></body></html>',
+        encoding="utf-8",
+    )
+
+    report = validate_course_package(fixture_package)
+
+    assert report.ok is False
+    assert any("script elements" in error for error in report.errors)
+    assert any("event handlers" in error for error in report.errors)
+
+
+def test_free_chapter_fields_must_agree(fixture_package):
+    data = json.loads((fixture_package / "manifest.json").read_text(encoding="utf-8"))
+    data["chapters"][0]["free_preview"] = False
+    (fixture_package / "manifest.json").write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+
+    report = validate_course_package(fixture_package)
+
+    assert report.ok is False
+    assert "free_chapters" in report.errors[0]

@@ -49,6 +49,7 @@ class AsyncExecutor:
                             f"开始处理 {len(files_to_process)} 个课程文件，每门课 {lessons} 节\n\n"))
                         run_batch_pipeline(
                             input_dir="课程标题",
+                            input_files=files_to_process,
                             lessons_per_course=lessons,
                             footer_text=footer,
                             thread_num=threads,

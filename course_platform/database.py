@@ -126,11 +126,14 @@ def sync_course(manifest: CourseManifest, content_path: Path, database_path: Pat
                 now,
             ),
         )
-        connection.execute("DELETE FROM chapters WHERE course_id = ?", (manifest.course_id,))
         connection.executemany(
             """
             INSERT INTO chapters (course_id, chapter_number, title, path, free_preview)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(course_id, chapter_number) DO UPDATE SET
+                title=excluded.title,
+                path=excluded.path,
+                free_preview=excluded.free_preview
             """,
             [
                 (
@@ -142,4 +145,13 @@ def sync_course(manifest: CourseManifest, content_path: Path, database_path: Pat
                 )
                 for chapter in manifest.chapters
             ],
+        )
+        chapter_numbers = [chapter.number for chapter in manifest.chapters]
+        placeholders = ", ".join("?" for _ in chapter_numbers)
+        connection.execute(
+            f"""
+            DELETE FROM chapters
+            WHERE course_id = ? AND chapter_number NOT IN ({placeholders})
+            """,
+            (manifest.course_id, *chapter_numbers),
         )

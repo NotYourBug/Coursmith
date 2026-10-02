@@ -12,6 +12,7 @@ import base64
 import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
 from openai import OpenAI
 
 # 修复 Windows 系统代理干扰 httpx 连接的问题
@@ -261,6 +262,7 @@ def load_config():
     global style_reference_mode, style_reference_text, style_reference_file
     global _cached_lessons, _cached_feishu_app_id, _cached_feishu_app_secret
     init_config_file()
+    load_dotenv(os.path.join(_CONFIG_DIR, '.env'), override=False)
     try:
         with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -285,8 +287,8 @@ def load_config():
         style_reference_text = data.get('style_reference_text', style_reference_text)
         style_reference_file = data.get('style_reference_file', style_reference_file)
         _cached_lessons = int(data.get('lessons_per_course', 30))
-        _cached_feishu_app_id = data.get('feishu_app_id', '')
-        _cached_feishu_app_secret = data.get('feishu_app_secret', '')
+        _cached_feishu_app_id = os.environ.get('FEISHU_APP_ID', '')
+        _cached_feishu_app_secret = os.environ.get('FEISHU_APP_SECRET', '')
     except Exception as e:
         print(f"加载配置文件失败: {str(e)}")
 
@@ -296,6 +298,9 @@ def save_config(data):
         data = dict(data)
         # Credentials belong in the local environment, never in config.json.
         data['api_key'] = ''
+        data['feishu_app_secret'] = ''
+        data.pop('feishu_encrypt_key', None)
+        data.pop('feishu_verification_token', None)
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
     except Exception as e:
@@ -956,8 +961,8 @@ def get_html_files(directory=".", include_numbered=False):
     return html_files
 
 
-def tran_all_html_to_png(max_workers, driver_path, include_numbered=False):
-    html_files = get_html_files(directory=os.getcwd(), include_numbered=include_numbered)
+def tran_all_html_to_png(max_workers, driver_path, include_numbered=False, directory="."):
+    html_files = get_html_files(directory=directory, include_numbered=include_numbered)
     if not html_files:
         print("未找到可转换的 HTML 文件")
         return
@@ -1005,13 +1010,19 @@ def zip_folders_in_directory(base_dir):
     return zipped_files
 
 
-def run_post_pipeline(dummy=None, do_png=True, do_zip=True, png_workers=10):
+def run_post_pipeline(base_dir=None, do_png=True, do_zip=True, png_workers=10):
     global browser_path
+    base_dir = os.path.abspath(base_dir or os.getcwd())
     if do_zip:
-        zip_folders_in_directory(os.getcwd())
+        zip_folders_in_directory(base_dir)
     if do_png:
         try:
-            tran_all_html_to_png(max_workers=png_workers, driver_path=browser_path, include_numbered=False)
+            tran_all_html_to_png(
+                max_workers=png_workers,
+                driver_path=browser_path,
+                include_numbered=False,
+                directory=base_dir,
+            )
         except Exception as e:
             print(f"转 PNG 失败: {e}")
 
@@ -1019,8 +1030,28 @@ def run_post_pipeline(dummy=None, do_png=True, do_zip=True, png_workers=10):
 # ── 高层管线 ──────────────────────────────────────────────
 
 def run_full_pipeline_for_titles(course_titles, lessons_per_course, footer_text, thread_num,
-                                 do_png=True, do_zip=True, png_workers=10):
+                                 do_png=True, do_zip=True, png_workers=10,
+                                 output_dir=None):
     """完整管线：课程标题 → 大纲 → HTML → 导航 → 后处理"""
+    if output_dir is not None:
+        target_dir = os.path.abspath(os.fspath(output_dir))
+        os.makedirs(target_dir, exist_ok=True)
+        with _cwd_lock:
+            original_cwd = os.getcwd()
+            os.chdir(target_dir)
+            try:
+                return run_full_pipeline_for_titles(
+                    course_titles=course_titles,
+                    lessons_per_course=lessons_per_course,
+                    footer_text=footer_text,
+                    thread_num=thread_num,
+                    do_png=do_png,
+                    do_zip=do_zip,
+                    png_workers=png_workers,
+                    output_dir=None,
+                )
+            finally:
+                os.chdir(original_cwd)
     load_config()
     global dict_html_list
     append_to_file("\n\n\n\n")
@@ -1032,7 +1063,7 @@ def run_full_pipeline_for_titles(course_titles, lessons_per_course, footer_text,
     print("********************(根据提示词生成网页)*******************")
     generate_lessons_from_outlines(dict_html_list, footer_text, thread_num)
     build_navigation_and_index(dict_html_list, footer_text)
-    run_post_pipeline(None, do_png=do_png, do_zip=do_zip, png_workers=png_workers)
+    run_post_pipeline(os.getcwd(), do_png=do_png, do_zip=do_zip, png_workers=png_workers)
     print("全部课程生成完毕！")
     return dict_html_list
 
@@ -1061,16 +1092,15 @@ def process_course_file(filepath, lessons_per_course, footer_text, thread_num):
     base_name = os.path.splitext(os.path.basename(filepath))[0]
     target_dir = os.path.join(os.path.dirname(filepath), base_name)
     os.makedirs(target_dir, exist_ok=True)
-    with _cwd_lock:
-        original_cwd = os.getcwd()
-        os.chdir(target_dir)
-        try:
-            outlines = run_full_pipeline_for_titles(
-                course_titles=course_titles, lessons_per_course=lessons_per_course,
-                footer_text=footer_text, thread_num=thread_num, do_png=False, do_zip=False,
-            )
-        finally:
-            os.chdir(original_cwd)
+    outlines = run_full_pipeline_for_titles(
+        course_titles=course_titles,
+        lessons_per_course=lessons_per_course,
+        footer_text=footer_text,
+        thread_num=thread_num,
+        do_png=False,
+        do_zip=False,
+        output_dir=target_dir,
+    )
     return outlines
 
 
@@ -1088,15 +1118,22 @@ def scan_course_files(input_dir="课程标题", extensions=(".txt",)):
     return sorted(files)
 
 
-def check_and_clean_incomplete_courses(input_dir="课程标题", expected_lessons=30):
-    """检查所有已生成课程目录的完整性，删除不达标的课程文件夹。"""
+def check_and_clean_incomplete_courses(input_dir="课程标题", expected_lessons=30,
+                                       category_paths=None):
+    """检查课程完整性并保留失败产物，便于诊断和继续生成。
+
+    函数名为兼容旧调用保留；它不再删除任何课程目录。
+    """
     if not os.path.isdir(input_dir):
-        return
+        return [], []
     print("\n==================== 课程完整性检查 ====================")
-    deleted = []
+    failed = []
     passed = []
-    for category_name in sorted(os.listdir(input_dir)):
-        category_path = os.path.join(input_dir, category_name)
+    if category_paths is None:
+        paths = [os.path.join(input_dir, name) for name in sorted(os.listdir(input_dir))]
+    else:
+        paths = sorted({os.path.abspath(path) for path in category_paths})
+    for category_path in paths:
         if not os.path.isdir(category_path):
             continue
         for course_name in sorted(os.listdir(category_path)):
@@ -1111,24 +1148,25 @@ def check_and_clean_incomplete_courses(input_dir="课程标题", expected_lesson
                 passed.append((course_path, html_count))
                 print(f"  [OK] {course_path} ({html_count}/{expected_lessons} 节)")
             else:
-                print(f"  [FAIL] {course_path} ({html_count}/{expected_lessons} 节) -- 删除")
-                try:
-                    import shutil
-                    shutil.rmtree(course_path)
-                    deleted.append(course_path)
-                except Exception as e:
-                    print(f"    删除失败: {e}")
-    print(f"\n检查完成: {len(passed)} 门课程通过, {len(deleted)} 门被删除并清理。")
-    return passed, deleted
+                print(f"  [FAIL] {course_path} ({html_count}/{expected_lessons} 节) -- 已保留")
+                failed.append((course_path, html_count))
+    print(f"\n检查完成: {len(passed)} 门课程通过, {len(failed)} 门未完成并已保留。")
+    return passed, failed
 
 
 def run_batch_pipeline(input_dir="课程标题", lessons_per_course=30, footer_text="资料云集",
                        thread_num=100, max_concurrent_files=10, do_png=True, do_zip=True,
-                       png_workers=10):
+                       png_workers=10, input_files=None):
     """批量处理：扫描课程标题/ .txt → 并发生成 → 完整性检查 → 后处理。"""
     load_config()
     input_dir = os.path.abspath(input_dir)
-    files = scan_course_files(input_dir)
+    if input_files is None:
+        files = scan_course_files(input_dir)
+    else:
+        files = sorted({os.path.abspath(os.fspath(path)) for path in input_files})
+        invalid = [path for path in files if not os.path.isfile(path) or not path.lower().endswith(".txt")]
+        if invalid:
+            raise ValueError(f"无效的课程标题文件: {invalid[0]}")
     if not files:
         print(f"在 {input_dir}/ 目录下未找到任何课程文件。")
         return
@@ -1143,20 +1181,21 @@ def run_batch_pipeline(input_dir="课程标题", lessons_per_course=30, footer_t
             except Exception as e:
                 print(f"处理文件失败: {e}")
     print("\n==================== 全部课程文件处理完毕，开始完整性检查 ====================")
-    check_and_clean_incomplete_courses(input_dir, lessons_per_course)
+    category_paths = [os.path.splitext(path)[0] for path in files]
+    check_and_clean_incomplete_courses(
+        input_dir, lessons_per_course, category_paths=category_paths
+    )
     print("\n==================== 检查完成，开始后处理（每个类别目录下 ZIP + PNG） ====================")
     # 后处理在每个类别目录内执行，确保 ZIP 对象是生成的课程文件夹
     if do_zip or do_png:
-        for category_name in sorted(os.listdir(input_dir)):
-            category_path = os.path.join(input_dir, category_name)
+        for category_path in sorted(set(category_paths)):
             if not os.path.isdir(category_path):
                 continue
             print(f"\n--- 后处理: {category_path} ---")
-            with _cwd_lock:
-                original_cwd = os.getcwd()
-                os.chdir(category_path)
-                try:
-                    run_post_pipeline(None, do_png=do_png, do_zip=do_zip, png_workers=png_workers)
-                finally:
-                    os.chdir(original_cwd)
+            run_post_pipeline(
+                category_path,
+                do_png=do_png,
+                do_zip=do_zip,
+                png_workers=png_workers,
+            )
     print("全部任务完成！")
