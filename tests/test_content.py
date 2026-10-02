@@ -122,3 +122,29 @@ def test_parsed_html_rejects_unsafe_or_missing_resources(fixture_package, body):
         f"<!doctype html><html><head></head><body>{body}</body></html>", encoding="utf-8"
     )
     assert validate_course_package(fixture_package).ok is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<svg><rect fill="url(https://example.com/paint.svg#p)"/></svg>',
+        '<svg><set attributeName="href" to="https://example.com/image.png"/></svg>',
+    ],
+)
+def test_package_validation_rejects_svg_url_bypasses(fixture_package, body):
+    (fixture_package / "chapters/01.html").write_text(
+        f"<!doctype html><html><head></head><body>{body}</body></html>", encoding="utf-8"
+    )
+    assert validate_course_package(fixture_package).ok is False
+
+
+@pytest.mark.parametrize("suffix", ["SVG", "HTML"])
+def test_package_validation_rejects_uppercase_active_assets(fixture_package, suffix):
+    (fixture_package / "assets").mkdir()
+    body = (
+        '<svg><script>steal()</script></svg>'
+        if suffix == "SVG"
+        else '<!doctype html><html><head></head><body><script>steal()</script></body></html>'
+    )
+    (fixture_package / "assets" / f"active.{suffix}").write_text(body, encoding="utf-8")
+    assert validate_course_package(fixture_package).ok is False

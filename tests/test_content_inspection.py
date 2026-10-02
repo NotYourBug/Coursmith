@@ -1,8 +1,10 @@
 import json
+import io
 import os
 import subprocess
 import stat
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -482,3 +484,151 @@ def test_other_url_attributes_cannot_bypass_safety(
     (root / "chapters/01.html").write_text(html(body), encoding="utf-8")
     with pytest.raises(BusinessError):
         inspect_package(root)
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        "fill",
+        "stroke",
+        "filter",
+        "clip-path",
+        "mask",
+        "marker",
+        "marker-start",
+        "marker-mid",
+        "marker-end",
+        "cursor",
+    ],
+)
+def test_svg_presentation_urls_follow_resource_policy(
+    package_with_free_and_paid_assets, attribute
+):
+    root = package_with_free_and_paid_assets
+    chapter = root / "chapters/01.html"
+    chapter.write_text(
+        html(f'<svg><rect {attribute}="url(https://example.com/paint.svg#p)"/></svg>'),
+        encoding="utf-8",
+    )
+    with pytest.raises(BusinessError):
+        inspect_package(root)
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        "fill",
+        "stroke",
+        "filter",
+        "clip-path",
+        "mask",
+        "marker",
+        "marker-start",
+        "marker-mid",
+        "marker-end",
+        "cursor",
+    ],
+)
+def test_svg_presentation_urls_include_transitive_preview_assets(
+    package_with_free_and_paid_assets, attribute
+):
+    root = package_with_free_and_paid_assets
+    (root / "assets/paint.svg").write_text(
+        '<svg><image href="free.png"/></svg>', encoding="utf-8"
+    )
+    (root / "chapters/01.html").write_text(
+        html(f'<svg><rect {attribute}="url(../assets/paint.svg#p)"/></svg>'),
+        encoding="utf-8",
+    )
+    assert inspect_package(root).preview_assets == frozenset(
+        {"assets/paint.svg", "assets/free.png"}
+    )
+
+
+@pytest.mark.parametrize(
+    "animation",
+    [
+        '<set attributeName="href" to="https://example.com/image.png"/>',
+        '<animate attributeName="xlink:href" values="free.png;https://example.com/image.png"/>',
+        '<animate attributeName="fill" to="url(https://example.com/paint.svg#p)"/>',
+    ],
+)
+def test_svg_url_mutating_animation_is_rejected(
+    package_with_free_and_paid_assets, animation
+):
+    root = package_with_free_and_paid_assets
+    (root / "chapters/01.html").write_text(
+        html(f"<svg>{animation}</svg>"), encoding="utf-8"
+    )
+    with pytest.raises(BusinessError):
+        inspect_package(root)
+
+
+@pytest.mark.parametrize("suffix", ["SVG", "HTML"])
+def test_uppercase_active_assets_are_rejected(
+    package_with_free_and_paid_assets, suffix
+):
+    root = package_with_free_and_paid_assets
+    asset = f"assets/active.{suffix}"
+    body = (
+        "<svg><script>steal()</script></svg>"
+        if suffix == "SVG"
+        else html("<script>steal()</script>")
+    )
+    (root / asset).write_text(body, encoding="utf-8")
+    (root / "chapters/01.html").write_text(
+        html(f'<img src="../{asset}">'), encoding="utf-8"
+    )
+    with pytest.raises(BusinessError):
+        inspect_package(root)
+    with pytest.raises(BusinessError):
+        read_verified_file(root, asset, None)
+
+
+def test_safe_uppercase_svg_keeps_fragment_and_transitive_dependencies(
+    package_with_free_and_paid_assets,
+):
+    root = package_with_free_and_paid_assets
+    (root / "assets/safe.SVG").write_text(
+        '<svg><image href="free.png"/><rect fill="url(#local)"/></svg>',
+        encoding="utf-8",
+    )
+    (root / "chapters/01.html").write_text(
+        html('<img src="../assets/safe.SVG">'), encoding="utf-8"
+    )
+    assert inspect_package(root).preview_assets == frozenset(
+        {"assets/safe.SVG", "assets/free.png"}
+    )
+
+
+def test_corrupt_deflate_zip_is_not_ready_and_does_not_block_verified_reads(
+    fixture_package,
+):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for relative in (
+            "manifest.json",
+            "index.html",
+            "SOURCES.txt",
+            "LICENSE.txt",
+            "chapters/01.html",
+        ):
+            archive.writestr(relative, (fixture_package / relative).read_bytes())
+        offset = archive.getinfo("manifest.json").header_offset
+    payload = bytearray(buffer.getvalue())
+    # Local-file header: 30 fixed bytes, then filename and extra fields.
+    name_length = int.from_bytes(payload[offset + 26 : offset + 28], "little")
+    extra_length = int.from_bytes(payload[offset + 28 : offset + 30], "little")
+    compressed_start = offset + 30 + name_length + extra_length
+    payload[compressed_start] = 0x07  # final block, reserved DEFLATE block type 3
+    (fixture_package / "downloads").mkdir()
+    (fixture_package / "downloads/course.zip").write_bytes(payload)
+    try:
+        inspection = inspect_package(fixture_package)
+    except zlib.error as exc:
+        pytest.fail(f"corrupt ZIP escaped the readiness boundary: {exc}")
+    assert inspection.zip_ready is False
+    assert (
+        read_verified_file(fixture_package, "LICENSE.txt", inspection.fingerprint)
+        == (fixture_package / "LICENSE.txt").read_bytes()
+    )

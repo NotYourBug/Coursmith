@@ -9,6 +9,7 @@ import posixpath
 import re
 import stat
 import zipfile
+import zlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -224,6 +225,11 @@ class _PackageHTML(HTMLParser):
             "frameset",
             "form",
             "portal",
+            "set",
+            "animate",
+            "animatecolor",
+            "animatemotion",
+            "animatetransform",
         }:
             self.errors.append("embedded active content is not allowed")
         attributes = dict(attrs)
@@ -243,7 +249,20 @@ class _PackageHTML(HTMLParser):
                 self.errors.append("active URL attributes are not allowed")
             if value is None:
                 continue
-            if name == "style":
+            if name in {
+                "style",
+                "fill",
+                "stroke",
+                "filter",
+                "clip-path",
+                "mask",
+                "marker",
+                "marker-start",
+                "marker-mid",
+                "marker-end",
+                "cursor",
+            }:
+                # SVG presentation values use CSS URL syntax, including escapes.
                 self.styles.append(value)
             elif name in {"srcset", "imagesrcset"}:
                 for candidate in value.split(","):
@@ -319,12 +338,14 @@ def _validate_snapshot(
     dependencies: dict[str, set[str]] = {}
     css_files = {name for name in files if name.lower().endswith(".css")}
     html_files = {"index.html", *(chapter.path for chapter in manifest.chapters)}
-    html_files.update(name for name in files if name.endswith((".html", ".svg")))
+    html_files.update(
+        name for name in files if name.lower().endswith((".html", ".svg"))
+    )
     for relative in sorted(html_files):
         parser = _PackageHTML()
         parser.feed(files[relative].decode("utf-8"))
         parser.close()
-        if not relative.endswith(".svg") and (
+        if not relative.lower().endswith(".svg") and (
             not parser.doctype or not {"html", "head", "body"} <= parser.tags
         ):
             parser.errors.append("missing HTML markers")
@@ -403,7 +424,14 @@ def _zip_ready(files: dict[str, bytes], manifest: CourseManifest) -> bool:
                     return False
                 names.add(name)
             return required <= names and archive.testzip() is None
-    except (ValueError, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError):
+    except (
+        ValueError,
+        OSError,
+        zipfile.BadZipFile,
+        RuntimeError,
+        NotImplementedError,
+        zlib.error,
+    ):
         return False
 
 
