@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .content import CourseManifest
+from .domain import BusinessError, utc_now
 
 
 SCHEMA = """
@@ -71,10 +74,6 @@ CREATE TABLE IF NOT EXISTS events (
 """
 
 
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def to_db_time(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -89,22 +88,159 @@ def from_db_time(value: str) -> datetime:
 def connect(path: Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(path, timeout=3)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout = 3000")
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
 
+@contextmanager
+def transaction(path: Path, *, immediate: bool = False):
+    """Own one connection and transaction, including rollback and closure.
+
+    Cross-domain writes must pass this connection to their in-transaction
+    functions. A denial is recorded separately after this context exits.
+    """
+    connection = connect(path)
+    try:
+        connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+        yield connection
+        connection.commit()
+    except BaseException as exc:
+        connection.rollback()
+        if isinstance(exc, sqlite3.OperationalError) and (
+            getattr(exc, "sqlite_errorcode", 0) & 0xFF
+        ) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            raise BusinessError("database_busy", "Database is busy; retry the operation.", 503) from None
+        raise
+    finally:
+        connection.close()
+
+
+def open_readonly(path: Path) -> sqlite3.Connection:
+    """Open an existing database without creating a file or changing pragmas."""
+    connection = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=3)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout = 3000")
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
+def validate_database(connection: sqlite3.Connection) -> None:
+    if [row[0] for row in connection.execute("PRAGMA integrity_check")] != ["ok"]:
+        raise BusinessError("database_integrity", "Database integrity check failed.", 409)
+    if connection.execute("PRAGMA foreign_key_check").fetchall():
+        raise BusinessError("database_foreign_keys", "Database foreign_key check failed.", 409)
+
+
+def backup_database(source: Path, target: Path) -> None:
+    """Reserve a new target, copy with SQLite's backup API, then validate it."""
+    source, target = Path(source), Path(target)
+    if not source.is_file():
+        raise BusinessError("database_missing", "Source database is missing.", 404)
+    if source.resolve() == target.resolve():
+        raise BusinessError("backup_target", "Backup must use a different, unused path.", 409)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # Exclusive creation protects existing files even when another process
+        # races the initial existence check. Never remove an unreserved target.
+        with target.open("xb"):
+            pass
+    except FileExistsError:
+        raise BusinessError("backup_exists", "Backup target already exists.", 409) from None
+    try:
+        with closing(open_readonly(source)) as original, closing(connect(target)) as backup:
+            original.backup(backup)
+            validate_database(backup)
+    except BaseException:
+        target.unlink()
+        raise
+
+
+LATEST_SCHEMA_VERSION = 2
+
+
+@dataclass(frozen=True)
+class MigrationReport:
+    from_version: int
+    to_version: int
+    backup_path: Path | None
+
+
+def _version(connection: sqlite3.Connection) -> int:
+    if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone():
+        return 0
+    versions = [row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")]
+    if versions != list(range(1, len(versions) + 1)) or len(versions) > LATEST_SCHEMA_VERSION:
+        raise BusinessError("migration_version", "Unknown or incomplete migration history.", 409)
+    return len(versions)
+
+
+def check_database(path: Path) -> dict[str, object]:
+    """Read-only inspection for the CLI; includes integrity and foreign keys."""
+    if not Path(path).is_file():
+        raise BusinessError("database_missing", "Database is missing.", 404)
+    try:
+        with closing(open_readonly(path)) as connection:
+            version = _version(connection)
+            validate_database(connection)
+            return {"version": version, "integrity": "ok", "foreign_keys": "ok"}
+    except sqlite3.DatabaseError:
+        raise BusinessError("database_invalid", "Database could not be validated.", 409) from None
+
+
+def migrate_database(
+    path: Path, *, backup_path: Path | None = None, through_version: int | None = None
+) -> MigrationReport:
+    from .migrations import v001_baseline, v002_operations
+
+    migrations = (v001_baseline, v002_operations)
+    path = Path(path)
+    target = LATEST_SCHEMA_VERSION if through_version is None else through_version
+    if type(target) is not int or not 1 <= target <= LATEST_SCHEMA_VERSION:
+        raise BusinessError("migration_target", "Unsupported migration target.", 400)
+    existing = path.exists()
+    current = int(check_database(path)["version"]) if existing else 0
+    if target < current:
+        raise BusinessError("migration_downgrade", "Database downgrades are not supported.", 409)
+    if target == current:
+        return MigrationReport(current, current, None)
+    if existing and backup_path is None:
+        raise BusinessError("backup_required", "An unused backup path is required before upgrading.", 409)
+    with transaction(path, immediate=True) as connection:
+        # Acquire the writer boundary before backup. A separate read connection
+        # can copy the committed source while this lock prevents concurrent writes.
+        locked_version = _version(connection)
+        if locked_version != current:
+            raise BusinessError("migration_changed", "Migration history changed; retry inspection.", 409)
+        actual_backup = Path(backup_path) if existing and backup_path is not None else None
+        if actual_backup is not None:
+            backup_database(path, actual_backup)
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        for version in range(current + 1, target + 1):
+            migrations[version - 1].apply(connection)
+            connection.execute("INSERT INTO schema_migrations VALUES (?, ?)", (version, to_db_time(utc_now())))
+        validate_database(connection)
+    return MigrationReport(current, target, actual_backup)
+
+
 def initialize_database(path: Path) -> None:
-    with connect(path) as connection:
-        connection.executescript(SCHEMA)
+    # Legacy startup remains the six-table compatibility baseline. Upgrades
+    # are explicit via migrate_database/CLI and must never happen on startup.
+    from .migrations.v001_baseline import apply
+
+    with transaction(path) as connection:
+        apply(connection)
 
 
 def sync_course(manifest: CourseManifest, content_path: Path, database_path: Path) -> None:
     """Upsert catalog metadata while keeping lesson HTML on disk."""
     initialize_database(database_path)
     now = to_db_time(utc_now())
-    with connect(database_path) as connection:
+    with transaction(database_path) as connection:
         connection.execute(
             """
             INSERT INTO courses

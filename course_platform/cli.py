@@ -8,7 +8,8 @@ from pathlib import Path
 
 from .access import AccessService
 from .content import load_course_package, publish_course, validate_course_package
-from .database import sync_course
+from .database import check_database, migrate_database, sync_course
+from .domain import BusinessError
 from .settings import load_settings
 
 
@@ -25,6 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
     create_code = subparsers.add_parser("create-code", help="create a one-time access code")
     create_code.add_argument("course_slug")
 
+    migrate = subparsers.add_parser("migrate", help="inspect or explicitly upgrade the database")
+    migrate.add_argument("--backup", type=Path)
+    migrate.add_argument("--check-only", action="store_true")
+
     serve = subparsers.add_parser("serve", help="start the local delivery site")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
@@ -39,6 +44,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report.ok else 1
 
     settings = load_settings()
+    if args.command == "migrate":
+        try:
+            if args.check_only:
+                result = check_database(settings.database_path)
+            else:
+                report = migrate_database(settings.database_path, backup_path=args.backup)
+                result = {"from_version": report.from_version, "to_version": report.to_version,
+                          "backup_path": str(report.backup_path) if report.backup_path else None}
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        except BusinessError as exc:
+            print(json.dumps({"error": exc.code, "message": exc.message}, ensure_ascii=False))
+            return 1
+
     if args.command == "publish":
         package = load_course_package(args.course_dir)
         target = publish_course(args.course_dir, settings.content_root, package.manifest)
