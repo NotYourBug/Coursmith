@@ -47,6 +47,20 @@ def db_path(tmp_path):
 
 
 @pytest.fixture
+def csrf_service(db_path, clock):
+    from course_platform.security import CsrfService
+
+    return CsrfService(db_path, clock=clock.now)
+
+
+@pytest.fixture
+def rate_limiter(db_path, clock):
+    from course_platform.admin.security import RateLimiter
+
+    return RateLimiter(db_path, clock=clock.now)
+
+
+@pytest.fixture
 def legacy_db(tmp_path):
     from course_platform.database import SCHEMA
 

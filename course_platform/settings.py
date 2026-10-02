@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlsplit
 
 try:
     from dotenv import dotenv_values
@@ -41,6 +44,36 @@ def _resolve_path(value: str, repository_root: Path) -> Path:
     return path if path.is_absolute() else repository_root / path
 
 
+def _origin_tuple(value: str) -> tuple[str, str, int]:
+    """Parse only a serialized HTTP origin, never a URL or a host header."""
+    if not value or any(char.isspace() or ord(char) < 32 for char in value) or any(
+        char in value for char in "\\,%?#"
+    ):
+        raise ValueError("COURSE_SITE_ORIGIN must be an HTTP(S) origin without a path")
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        raise ValueError("COURSE_SITE_ORIGIN has an invalid authority") from None
+    host = parsed.hostname
+    if (parsed.scheme not in ("http", "https") or not host or parsed.path
+            or parsed.username is not None or parsed.password is not None
+            or not re.fullmatch(r"(?:\[[0-9a-fA-F:.]+\]|[a-zA-Z0-9.-]+)(?::[0-9]+)?", parsed.netloc)):
+        raise ValueError("COURSE_SITE_ORIGIN must be an HTTP(S) origin without a path")
+    try:
+        host = str(ip_address(host))
+    except ValueError:
+        if len(host) > 253 or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                                      for label in host.split(".")):
+            raise ValueError("COURSE_SITE_ORIGIN has an invalid hostname") from None
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("COURSE_SITE_ORIGIN has an invalid port") from None
+    if port == 0:
+        raise ValueError("COURSE_SITE_ORIGIN has an invalid port")
+    return parsed.scheme, host, port if port is not None else (443 if parsed.scheme == "https" else 80)
+
+
 @dataclass(frozen=True)
 class Settings:
     base_url: str
@@ -49,6 +82,18 @@ class Settings:
     database_path: Path
     session_ttl_hours: int
     environment: str
+    site_origin: str = "http://127.0.0.1:8000"
+    trusted_proxy_cidrs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        scheme, _, _ = _origin_tuple(self.site_origin)
+        if self.environment == "production" and scheme != "https":
+            raise ValueError("COURSE_SITE_ORIGIN must be an explicit HTTPS origin in production")
+        try:
+            for cidr in self.trusted_proxy_cidrs:
+                ip_network(cidr)
+        except ValueError:
+            raise ValueError("COURSE_TRUSTED_PROXY_CIDRS must contain valid CIDR networks") from None
 
     @property
     def has_llm_credentials(self) -> bool:
@@ -62,6 +107,8 @@ class Settings:
             "database_path": str(self.database_path),
             "session_ttl_hours": self.session_ttl_hours,
             "environment": self.environment,
+            "site_origin": self.site_origin,
+            "trusted_proxy_cidrs": self.trusted_proxy_cidrs,
             "has_llm_credentials": self.has_llm_credentials,
         }
 
@@ -86,6 +133,13 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     if session_ttl_hours <= 0:
         raise ValueError("COURSE_SESSION_TTL_HOURS must be greater than zero")
 
+    environment = values.get("COURSE_ENVIRONMENT", "development").strip().lower() or "development"
+    if environment == "production" and not values.get("COURSE_SITE_ORIGIN", "").strip():
+        raise ValueError("COURSE_SITE_ORIGIN must be an explicit HTTPS origin in production")
+    site_origin = values.get("COURSE_SITE_ORIGIN", "http://127.0.0.1:8000").strip()
+    raw_proxies = values.get("COURSE_TRUSTED_PROXY_CIDRS", "").strip()
+    trusted_proxy_cidrs = tuple(part.strip() for part in raw_proxies.split(",")) if raw_proxies else ()
+
     content_root = _resolve_path(
         values.get("COURSE_CONTENT_ROOT", "content/courses"), REPOSITORY_ROOT
     )
@@ -101,8 +155,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         content_root=content_root,
         database_path=database_path,
         session_ttl_hours=session_ttl_hours,
-        environment=(
-            values.get("COURSE_ENVIRONMENT", "development").strip().lower()
-            or "development"
-        ),
+        environment=environment,
+        site_origin=site_origin,
+        trusted_proxy_cidrs=trusted_proxy_cidrs,
     )
