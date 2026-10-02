@@ -105,3 +105,20 @@ def test_free_chapter_fields_must_agree(fixture_package):
 
     assert report.ok is False
     assert "free_chapters" in report.errors[0]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<a href=javascript:steal()>link</a>',
+        '<a href="java&#x09;script:steal()">link</a>',
+        '<img src=https://example.com/p.png>',
+        '<svg><a xlink:href=javascript:steal()>link</a></svg>',
+        '<img src=../assets/missing.png>',
+    ],
+)
+def test_parsed_html_rejects_unsafe_or_missing_resources(fixture_package, body):
+    (fixture_package / "chapters/01.html").write_text(
+        f"<!doctype html><html><head></head><body>{body}</body></html>", encoding="utf-8"
+    )
+    assert validate_course_package(fixture_package).ok is False

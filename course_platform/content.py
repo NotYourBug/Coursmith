@@ -10,32 +10,23 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
+from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
-_REMOTE_RE = re.compile(r"(?:https?:)?//", re.IGNORECASE)
-_SCRIPT_SRC_RE = re.compile(r"<script\b[^>]*\bsrc\s*=\s*['\"]([^'\"]+)", re.I)
-_STYLESHEET_RE = re.compile(
-    r"<link\b[^>]*\b(?:href\s*=\s*['\"]([^'\"]+)['\"][^>]*\brel\s*=\s*['\"]stylesheet|"
-    r"rel\s*=\s*['\"]stylesheet['\"][^>]*\bhref\s*=\s*['\"]([^'\"]+))",
-    re.I,
-)
-_IMAGE_SRC_RE = re.compile(r"<img\b[^>]*\bsrc\s*=\s*['\"]([^'\"]+)", re.I)
-_SCRIPT_TAG_RE = re.compile(r"<script\b", re.I)
-_ACTIVE_TAG_RE = re.compile(r"<(?:iframe|object|embed|base)\b", re.I)
-_EVENT_HANDLER_RE = re.compile(r"\son[a-z0-9_-]+\s*=", re.I)
-_JAVASCRIPT_URL_RE = re.compile(r"(?:href|src|action)\s*=\s*['\"]\s*javascript:", re.I)
-_REMOTE_CSS_RE = re.compile(r"(?:@import\s+|url\s*\(\s*['\"]?)(?:https?:)?//", re.I)
 
 
 def _safe_relative_path(value: str) -> str:
+    value = unquote(value, errors="strict")
     if not value or "\x00" in value:
         raise ValueError("path must be a non-empty relative path")
-    if "\\" in value:
+    if "\\" in value or ":" in value or "%" in value or "?" in value or "#" in value:
         raise ValueError("path must use forward slashes")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("path must not contain control characters")
     path = PurePosixPath(value)
     if path.is_absolute() or ".." in path.parts or "." in path.parts:
         raise ValueError(f"unsafe relative path: {value}")
@@ -176,31 +167,6 @@ def load_course_package(path: Path) -> CoursePackage:
     return CoursePackage(manifest=manifest, root=root, chapter_files=chapter_files)
 
 
-def _check_external_resources(file_path: Path, text: str) -> list[str]:
-    errors: list[str] = []
-    for value in _SCRIPT_SRC_RE.findall(text):
-        if _REMOTE_RE.search(value):
-            errors.append(f"{file_path.name}: external script is not allowed: {value}")
-    for match in _STYLESHEET_RE.findall(text):
-        value = next((item for item in match if item), "")
-        if _REMOTE_RE.search(value):
-            errors.append(f"{file_path.name}: external stylesheet is not allowed: {value}")
-    for value in _IMAGE_SRC_RE.findall(text):
-        if _REMOTE_RE.search(value):
-            errors.append(f"{file_path.name}: external image is not allowed: {value}")
-    if _SCRIPT_TAG_RE.search(text):
-        errors.append(f"{file_path.name}: script elements are not allowed")
-    if _ACTIVE_TAG_RE.search(text):
-        errors.append(f"{file_path.name}: embedded active content is not allowed")
-    if _EVENT_HANDLER_RE.search(text):
-        errors.append(f"{file_path.name}: inline event handlers are not allowed")
-    if _JAVASCRIPT_URL_RE.search(text):
-        errors.append(f"{file_path.name}: javascript URLs are not allowed")
-    if _REMOTE_CSS_RE.search(text):
-        errors.append(f"{file_path.name}: remote CSS resources are not allowed")
-    return errors
-
-
 def _optional_files(root: Path, directory: str) -> list[Path]:
     optional_root = root / directory
     if not optional_root.exists():
@@ -220,62 +186,26 @@ def _optional_files(root: Path, directory: str) -> list[Path]:
     return files
 
 
-def _check_html(file_path: Path) -> list[str]:
-    try:
-        text = file_path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return [f"{file_path.name}: HTML must be UTF-8"]
-    errors = []
-    lowered = text.lower()
-    for marker in ("<!doctype html", "<html", "<head", "<body"):
-        if marker not in lowered:
-            errors.append(f"{file_path.name}: missing HTML marker {marker}")
-    errors.extend(_check_external_resources(file_path, text))
-    return errors
-
-
 def validate_course_package(path: Path) -> ValidationReport:
-    root = Path(path).resolve()
-    errors: list[str] = []
-    warnings: list[str] = []
+    # Import lazily: snapshot inspection uses the manifest models above.
+    from .content_inspection import (
+        _confirm_snapshot,
+        _package_root,
+        _read_snapshot,
+        _validate_snapshot,
+    )
+
     try:
-        package = load_course_package(root)
-    except Exception as exc:
+        root = _package_root(path)
+        files, inventory = _read_snapshot(root)
+        manifest, _ = _validate_snapshot(files)
+        _confirm_snapshot(root, files, inventory)
+    except (ValueError, OSError, RecursionError) as exc:
         return ValidationReport(ok=False, errors=[str(exc)], warnings=[])
-
-    manifest = package.manifest
-    required = ["index.html", manifest.source_manifest, manifest.license_file]
-    for relative in required:
-        try:
-            unresolved = root / relative
-            candidate = _resolved_child(root, relative)
-            if unresolved.is_symlink():
-                errors.append(f"symbolic links are not allowed: {relative}")
-            elif not candidate.is_file():
-                errors.append(f"required file is missing: {relative}")
-        except ValueError as exc:
-            errors.append(str(exc))
-
-    for chapter, chapter_file in zip(manifest.chapters, package.chapter_files):
-        unresolved = root / chapter.path
-        if unresolved.is_symlink():
-            errors.append(f"symbolic links are not allowed: {chapter.path}")
-        elif not chapter_file.is_file():
-            errors.append(f"chapters/{chapter.number:02d}.html is missing: {chapter.path}")
-        else:
-            errors.extend(_check_html(chapter_file))
-
-    index_file = root / "index.html"
-    if index_file.is_file():
-        errors.extend(_check_html(index_file))
-    for optional_dir in ("assets", "downloads"):
-        try:
-            _optional_files(root, optional_dir)
-        except ValueError as exc:
-            errors.append(str(exc))
+    warnings: list[str] = []
     if manifest.status == "published" and not manifest.free_chapters:
         warnings.append("published course has no free preview chapter")
-    return ValidationReport(ok=not errors, errors=errors, warnings=warnings)
+    return ValidationReport(ok=True, errors=[], warnings=warnings)
 
 
 def _copy_if_present(source: Path, target: Path) -> None:
