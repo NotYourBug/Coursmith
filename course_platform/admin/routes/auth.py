@@ -128,7 +128,7 @@ async def require_admin_post(request: Request) -> tuple[Actor, dict[str, str]]:
     session = await run_in_threadpool(require_owner, request)
     check_origin(request, request.app.state.settings.site_origin)
     form = parse_unique_form(await read_limited_body(request, 65536))
-    request.app.state.csrf_service.verify_bound_csrf(
+    await run_in_threadpool(request.app.state.csrf_service.verify_bound_csrf,
         form.get("csrf_token", ""), request.cookies.get(CSRF_COOKIE, ""), session.csrf_hash,
     )
     return Actor(session.admin_id, request.state.request_id), form

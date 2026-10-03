@@ -361,7 +361,9 @@ class CodeService:
                 revision, created_at, notes FROM code_batches WHERE id=?""", (batch_id,)).fetchone()
             if not batch:
                 raise BusinessError("batch_missing", "Batch does not exist.", 404)
-            codes = connection.execute("""SELECT id, code_number, revision, expires_at, used_at, voided_at,
-                replaces_code_id FROM access_codes WHERE batch_id=? ORDER BY id LIMIT 20 OFFSET ?""", (batch_id, offset)).fetchall()
+            codes = connection.execute("""SELECT c.id, c.code_number, c.revision, c.expires_at, c.used_at, c.voided_at,
+                c.replaces_code_id, e.id AS entitlement_id FROM access_codes c
+                LEFT JOIN entitlements e ON e.source_code_id=c.id
+                WHERE c.batch_id=? ORDER BY c.id LIMIT 20 OFFSET ?""", (batch_id, offset)).fetchall()
             total = connection.execute("SELECT count(*) FROM access_codes WHERE batch_id=?", (batch_id,)).fetchone()[0]
             return dict(batch), [dict(row) for row in codes], total

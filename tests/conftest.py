@@ -257,6 +257,27 @@ def redeemed(entitlement_service, issued_code):
 
 
 @pytest.fixture
+def recovery_service(db_path, entitlement_service):
+    from course_platform.delivery.recovery import RecoveryService
+
+    return RecoveryService(db_path, clock=entitlement_service.clock,
+        session_ttl_hours=entitlement_service.session_ttl_hours, entitlement_service=entitlement_service)
+
+
+@pytest.fixture
+def verified_gift(code_service, active_product, actor, entitlement_service, db_path, clock):
+    from course_platform.database import to_db_time, transaction
+    from course_platform.operations.codes import BatchInput
+
+    code = code_service.issue_batch(actor, BatchInput(product_id=active_product.id, purpose="gift"), "gift").codes[0]
+    receipt = entitlement_service.redeem(code.raw_code, expected_course_id=None, request_id="gift-redeem")
+    with transaction(db_path) as connection:
+        connection.execute("UPDATE entitlements SET verified_at=?, verified_by=?, verified_reason=? WHERE id=?",
+            (to_db_time(clock.now()), actor.admin_id, "核对发行用途 gift 并人工确认受赠者", receipt.session.entitlement_id))
+    return receipt
+
+
+@pytest.fixture
 def code_app(http_app_factory, admin_settings, admin_service, csrf_service, rate_limiter,
              product_service, code_service):
     from course_platform.admin.routes.auth import router as auth_router
