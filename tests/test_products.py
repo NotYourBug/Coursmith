@@ -301,3 +301,100 @@ def test_category_order_and_disable_preserve_references(product_service, product
     assert [category["id"] for category in categories] == [second, active_product.data.category_id]
     assert categories[1]["enabled"] == 0 and categories[1]["revision"] == 2
     assert product_service.get_product(active_product.id).data.category_id == active_product.data.category_id
+
+
+def test_unbound_draft_can_be_archived(product_service, product_owner, published_product_data, db_path):
+    draft = product_service.create(product_owner, published_product_data.model_copy(update={"course_id": None}))
+    archived = product_service.set_status(product_owner, draft.id, draft.revision, "archived")
+    assert archived.status == "archived" and archived.data.course_id is None
+    assert archived.revision == draft.revision + 1
+    with transaction(db_path) as connection, pytest.raises(BusinessError) as err:
+        product_service.require_sale_ready_in_tx(connection, archived.id)
+    assert err.value.code == "product_not_active"
+
+
+def test_category_management_has_twenty_items_per_page(product_service, product_owner):
+    for index in range(21):
+        product_service.save_category(product_owner, None, None, f"category-{index}", f"分类 {index}", index, True)
+    first, total = product_service.list_category_page(page=1)
+    second, second_total = product_service.list_category_page(page=2)
+    assert total == second_total == 21
+    assert [row["name"] for row in first] == [f"分类 {index}" for index in range(20)]
+    assert [row["name"] for row in second] == ["分类 20"]
+    assert len(product_service.list_categories()) == 21  # complete selector lookup
+
+
+def test_auto_import_before_owner_is_atomic_and_honestly_attributed(product_service, db_path, fixture_package):
+    from course_platform.content import CourseManifest
+    from course_platform.database import sync_course
+
+    manifest = CourseManifest.model_validate_json((fixture_package / "manifest.json").read_bytes())
+    sync_course(manifest, fixture_package, db_path)
+    with pytest.raises(RuntimeError, match="import rollback"):
+        with transaction(db_path) as connection:
+            product_service.ensure_draft_in_tx(connection, manifest.course_id)
+            raise RuntimeError("import rollback")
+    with transaction(db_path) as connection:
+        assert connection.execute("SELECT count(*) FROM products").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM categories").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM admin_events").fetchone()[0] == 0
+        draft = product_service.ensure_draft_in_tx(connection, manifest.course_id)
+        same = product_service.ensure_draft_in_tx(connection, manifest.course_id)
+        assert draft == same and draft.status == "draft" and draft.data.policy is None
+        assert connection.execute("SELECT count(*) FROM admins").fetchone()[0] == 0
+        assert connection.execute("SELECT created_by FROM products").fetchone()[0] is None
+        assert connection.execute("SELECT created_by FROM categories").fetchone()[0] is None
+        assert connection.execute("SELECT access_days, update_policy FROM products").fetchone()[:] == (None, None)
+        assert json.loads(connection.execute("SELECT description FROM products").fetchone()[0])["policy"] is None
+        events = [dict(row) for row in connection.execute("SELECT * FROM admin_events")]
+    assert [row["action"] for row in events] == ["category.create", "product.create"]
+    assert all(row["actor_admin_id"] is None for row in events)
+    assert len({row["request_id"] for row in events}) == 1
+
+
+def test_import_requires_caller_transaction_and_existing_course(product_service, db_path):
+    from contextlib import closing
+    from course_platform.database import connect
+
+    with closing(connect(db_path)) as connection, pytest.raises(BusinessError) as err:
+        product_service.ensure_draft_in_tx(connection, "missing")
+    assert err.value.code == "import_transaction"
+    with transaction(db_path) as connection, pytest.raises(BusinessError) as err:
+        product_service.ensure_draft_in_tx(connection, "missing")
+    assert err.value.code == "course_missing"
+
+
+@pytest.mark.parametrize("page", [0, -1, True, 999999999999999999])
+def test_shared_pagination_rejects_unsafe_pages(product_service, page):
+    for listing in (lambda: product_service.list_products(status=None, category_id=None, title="", page=page),
+                    lambda: product_service.list_category_page(page=page)):
+        with pytest.raises(BusinessError) as err:
+            listing()
+        assert err.value.status_code == 400
+
+
+@pytest.mark.parametrize("identity", ["unknown", "disabled"])
+def test_nullable_import_attribution_does_not_authorize_manual_writes(
+        product_service, product_owner, published_product_data, db_path, identity):
+    if identity == "disabled":
+        with transaction(db_path) as connection:
+            connection.execute("UPDATE admins SET enabled=0 WHERE id=?", (product_owner.admin_id,))
+        actor = product_owner
+    else:
+        actor = Actor(999, "unknown-owner-request")
+    for mutation in (
+            lambda: product_service.create(actor, published_product_data),
+            lambda: product_service.save_category(actor, None, None, "manual", "Manual", 0, True)):
+        with pytest.raises(BusinessError) as err:
+            mutation()
+        assert err.value.code == "owner_required" and err.value.status_code == 403
+        assert err.value.denial_recorded
+    with transaction(db_path) as connection:
+        assert connection.execute("SELECT count(*) FROM products").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM categories WHERE slug='manual'").fetchone()[0] == 0
+        denials = connection.execute("""SELECT actor_admin_id, action, outcome, request_id
+            FROM admin_events WHERE action IN ('product.create', 'category.create') AND outcome='denied'
+            ORDER BY id""").fetchall()
+    assert [row[1] for row in denials] == ["product.create", "category.create"]
+    assert all(row[0] == (product_owner.admin_id if identity == "disabled" else None)
+               and row[2] == "denied" and row[3] == actor.request_id for row in denials)

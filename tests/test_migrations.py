@@ -58,7 +58,7 @@ def test_failed_migration_rolls_back(legacy_db, tmp_path, monkeypatch):
     with closing(sqlite3.connect(legacy_db)) as connection:
         assert connection.execute("SELECT name FROM sqlite_master WHERE name IN ('schema_migrations', 'products')").fetchall() == []
     monkeypatch.setattr(v002_operations, "apply", original)
-    assert migrate_database(legacy_db, backup_path=tmp_path / "retry.db").to_version == 2
+    assert migrate_database(legacy_db, backup_path=tmp_path / "retry.db").to_version == 3
 
 
 def test_existing_upgrade_requires_non_overwriting_backup(legacy_db, tmp_path):
@@ -102,7 +102,7 @@ def test_v1_can_be_upgraded_separately(tmp_path):
     with pytest.raises(BusinessError):
         migrate_database(path)
     report = migrate_database(path, backup_path=tmp_path / "v1.db")
-    assert (report.from_version, report.to_version) == (1, 2)
+    assert (report.from_version, report.to_version) == (1, 3)
 
 
 @pytest.mark.parametrize("versions", [[3], [1, 3], [2]])
@@ -118,7 +118,7 @@ def test_unknown_or_noncontiguous_versions_are_rejected(tmp_path, versions):
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [0, 3, -1, True, 1.5])
+@pytest.mark.parametrize("version", [0, 4, -1, True, 1.5])
 def test_invalid_target_is_rejected_before_creating_database(tmp_path, version):
     path = tmp_path / "new.db"
     with pytest.raises(BusinessError):
@@ -166,7 +166,7 @@ def test_cli_check_only_does_not_modify_source(legacy_db, tmp_path, monkeypatch,
     assert '"version": 0' in output and '"integrity": "ok"' in output
     assert legacy_db.read_bytes() == before
     assert cli.main(["migrate", "--backup", str(tmp_path / "before.db")]) == 0
-    assert '"to_version": 2' in capsys.readouterr().out
+    assert '"to_version": 3' in capsys.readouterr().out
 
 
 def test_cli_check_missing_database_does_not_create_it(tmp_path, monkeypatch, capsys):
@@ -334,3 +334,185 @@ def test_order_entitlement_requires_matching_product(seeded_operations):
     with pytest.raises(sqlite3.IntegrityError):
         with transaction(seeded_operations) as connection:
             connection.execute("UPDATE entitlements SET product_id=NULL WHERE id=1")
+
+
+def operations_snapshot(path):
+    with closing(connect(path)) as connection:
+        tables = [row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        return {table: [tuple(row) for row in connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid')]
+                for table in tables}
+
+
+@pytest.fixture
+def populated_v2(tmp_path):
+    path = tmp_path / "populated-v2.db"
+    migrate_database(path, through_version=2)
+    with transaction(path) as connection:
+        connection.execute("INSERT INTO admins (id, username, password_hash) VALUES (1, 'owner', 'hash')")
+        connection.execute("INSERT INTO categories (id, slug, name, created_by) VALUES (1, 'technical', '技术', 1)")
+        for course_id in ("c1", "c2", "c3"):
+            connection.execute("""INSERT INTO courses
+                (course_id, slug, title, category, version, status, content_path, updated_at, package_hash)
+                VALUES (?, ?, 'Course', 'technical', '1.0.0', 'published', 'original/path', '2026-10-02', 'original-hash')""",
+                (course_id, course_id))
+        connection.execute("INSERT INTO chapters VALUES ('c1', 1, 'One', 'one.html', 0)")
+        connection.execute("""INSERT INTO products
+            (id, course_id, title, description, category_id, status, access_days, update_policy,
+             sales_check_json, sales_checked_at, sales_package_hash, revision, created_by, created_at, updated_at)
+            VALUES (1, 'c1', 'Original', 'unchanged-json', 1, 'active', 30, 'current_version',
+                    'original-approval', '2026-10-02', 'original-hash', 7, 1, 'created', 'updated')""")
+        connection.execute("INSERT INTO products (id, course_id, title, created_by) VALUES (2, 'c3', 'Code-only', 1)")
+        connection.execute("INSERT INTO products (id, title, created_by) VALUES (3, 'Unbound', 1)")
+        connection.execute("""INSERT INTO orders
+            (id, product_id, channel, shop, external_order_id, amount_cents, created_by)
+            VALUES (1, 1, 'store', 'shop', '001', 1200, 1)""")
+        connection.execute("""INSERT INTO code_batches
+            (id, product_id, quantity, purpose, idempotency_key, access_days, course_version, package_hash, created_by)
+            VALUES (1, 1, 1, 'sale', 'batch-key', 30, '1.0.0', 'original-hash', 1)""")
+        connection.execute("""INSERT INTO access_codes
+            (id, course_id, code_hash, created_at, used_at, product_id, batch_id, order_id,
+             access_days, course_version, package_hash, update_policy, created_by)
+            VALUES (1, 'c1', 'code-hash', 'created', 'used', 1, 1, 1, 30, '1.0.0', 'original-hash', 'current_version', 1)""")
+        connection.execute("INSERT INTO access_codes (id, course_id, code_hash, created_at, product_id) VALUES (2, 'c3', 'other-code', 'created', 2)")
+        connection.execute("""INSERT INTO entitlements
+            (id, course_id, product_id, order_id, source_code_id, course_version, package_hash, access_days, created_by)
+            VALUES (1, 'c1', 1, 1, 1, '1.0.0', 'original-hash', 30, 1)""")
+        connection.execute("""INSERT INTO sessions
+            (session_hash, course_id, created_at, expires_at, entitlement_id, source_code_id)
+            VALUES ('session-hash', 'c1', 'created', 'original-expiry', 1, 1)""")
+        connection.execute("INSERT INTO progress VALUES ('session-hash', 'c1', 1, 1, 'original-time')")
+        connection.execute("INSERT INTO entitlement_progress VALUES (1, 'c1', 1, 1, 'original-time')")
+        connection.execute("INSERT INTO recovery_credentials (entitlement_id, credential_hash, created_by) VALUES (1, 'recovery-hash', 1)")
+        connection.execute("INSERT INTO admin_sessions VALUES ('admin-hash', 1, 'csrf-hash', 'created', 'activity', 'expiry', NULL)")
+        connection.execute("INSERT INTO csrf_challenges VALUES ('nonce-hash', 'admin.login', 'expiry', NULL)")
+        connection.execute("INSERT INTO request_limits VALUES ('login', 'source-hash', 'owner', 'window', 1, NULL)")
+        connection.execute("INSERT INTO events (event_type, course_id, metadata_json, created_at) VALUES ('redeemed', 'c1', '{}', 'created')")
+        connection.execute("""INSERT INTO admin_events
+            (actor_admin_id, object_type, object_id, action, reason, changes_json, outcome, request_id, created_at)
+            VALUES (1, 'product', '1', 'product.create', 'completed', '{}', 'success', 'original-request', 'created')""")
+        connection.execute("""INSERT INTO operation_requests
+            (actor_admin_id, action, idempotency_key, request_digest, object_type, object_id)
+            VALUES (1, 'code.issue', 'original-key', 'original-digest', 'batch', '1')""")
+        connection.execute("CREATE INDEX product_title_lookup ON products(title)")
+        connection.execute("CREATE VIEW product_titles AS SELECT id, title FROM products")
+    return path
+
+
+def test_product_lifecycle_fresh_allows_import_and_unbound_archive(tmp_path):
+    path = tmp_path / "fresh.db"
+    assert migrate_database(path).to_version == 3
+    with transaction(path) as connection:
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        connection.execute("INSERT INTO products (title, created_by) VALUES ('Auto draft', NULL)")
+        connection.execute("UPDATE products SET status='archived'")
+        assert connection.execute("SELECT course_id, status, created_by FROM products").fetchone()[:] == (None, "archived", None)
+        assert [row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3]
+        for status in ("active", "paused"):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute("UPDATE products SET status=?", (status,))
+
+
+def test_product_lifecycle_upgrade_preserves_populated_graph_and_backup(populated_v2, tmp_path):
+    before = operations_snapshot(populated_v2)
+    with closing(connect(populated_v2)) as connection:
+        triggers = [tuple(row) for row in connection.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' ORDER BY name")]
+    backup = tmp_path / "before-v3.db"
+    report = migrate_database(populated_v2, backup_path=backup)
+    assert (report.from_version, report.to_version, report.backup_path) == (2, 3, backup)
+    assert operations_snapshot(backup) == before
+    after = operations_snapshot(populated_v2)
+    assert after.pop("schema_migrations")[:2] == before.pop("schema_migrations")
+    assert after == before
+    with closing(connect(populated_v2)) as connection:
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert [tuple(row) for row in connection.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' ORDER BY name")] == triggers
+        assert connection.execute("SELECT title FROM product_titles WHERE id=1").fetchone()[0] == "Original"
+        assert connection.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='product_title_lookup'").fetchone()
+    bytes_before_rerun = populated_v2.read_bytes()
+    assert migrate_database(populated_v2).to_version == 3
+    assert populated_v2.read_bytes() == bytes_before_rerun
+
+
+def test_product_lifecycle_restores_views_before_their_triggers(populated_v2, tmp_path):
+    with transaction(populated_v2) as connection:
+        connection.execute("""CREATE TRIGGER product_titles_update
+            INSTEAD OF UPDATE OF title ON product_titles BEGIN
+            UPDATE products SET title=NEW.title WHERE id=OLD.id; END""")
+    failure = None
+    try:
+        migrate_database(populated_v2, backup_path=tmp_path / "before-view.db")
+    except sqlite3.OperationalError as error:
+        failure = str(error)
+    assert failure is None, f"Migration must preserve an existing view and its trigger: {failure}"
+    with transaction(populated_v2) as connection:
+        connection.execute("UPDATE product_titles SET title='Updated through view' WHERE id=1")
+        assert connection.execute("SELECT title FROM products WHERE id=1").fetchone()[0] == "Updated through view"
+
+
+@pytest.mark.parametrize("fault", ["exception", "invalid_fk", "invalid_legacy_link"])
+def test_product_lifecycle_failure_rolls_back_graph_history_and_schema(populated_v2, tmp_path, monkeypatch, fault):
+    from course_platform.migrations import v003_product_lifecycle
+
+    before = operations_snapshot(populated_v2)
+    with closing(connect(populated_v2)) as connection:
+        schema_before = [tuple(row) for row in connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name")]
+    original = v003_product_lifecycle.apply
+
+    def fail_after_rebuild(connection):
+        original(connection)
+        connection.execute("UPDATE products SET title='partial'")
+        if fault == "exception":
+            raise RuntimeError("injected lifecycle failure")
+        if fault == "invalid_fk":
+            connection.execute("UPDATE categories SET created_by=999")
+        else:
+            connection.execute("DROP TRIGGER access_codes_links_update")
+            connection.execute("UPDATE access_codes SET course_id='c2' WHERE id=2")
+
+    monkeypatch.setattr(v003_product_lifecycle, "apply", fail_after_rebuild)
+    backup = tmp_path / "recovery-v2.db"
+    with pytest.raises(RuntimeError if fault == "exception" else BusinessError):
+        migrate_database(populated_v2, backup_path=backup)
+    assert operations_snapshot(populated_v2) == operations_snapshot(backup) == before
+    with transaction(populated_v2) as connection:
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert [tuple(row) for row in connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name")] == schema_before
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name='products_lifecycle'").fetchone() is None
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE products SET status='archived' WHERE id=3")
+    monkeypatch.setattr(v003_product_lifecycle, "apply", original)
+    assert migrate_database(populated_v2, backup_path=tmp_path / "retry-v2.db").to_version == 3
+
+
+def test_product_lifecycle_upgrade_requires_new_backup(populated_v2, tmp_path):
+    before = operations_snapshot(populated_v2)
+    occupied = tmp_path / "occupied.db"
+    occupied.write_bytes(b"existing backup")
+    for target in (None, populated_v2, occupied):
+        with pytest.raises(BusinessError):
+            migrate_database(populated_v2, backup_path=target)
+        assert operations_snapshot(populated_v2) == before
+    assert occupied.read_bytes() == b"existing backup"
+
+
+@pytest.mark.parametrize("statement", [
+    "UPDATE products SET course_id='c2' WHERE id=2",  # code-only parent trigger
+    "UPDATE access_codes SET course_id='c2' WHERE id=2",  # child trigger
+    "UPDATE products SET created_by=999 WHERE id=3",
+    "UPDATE products SET access_days=0 WHERE id=3",
+    "UPDATE products SET revision=0 WHERE id=3",
+    "UPDATE products SET update_policy='automatic' WHERE id=3",
+    "UPDATE products SET status='active' WHERE id=3",
+    "UPDATE products SET status='paused' WHERE id=3",
+    "UPDATE products SET status='invalid' WHERE id=3",
+    "UPDATE products SET course_id='c1' WHERE id=3",
+    "UPDATE products SET category_id=999 WHERE id=3",
+])
+def test_product_lifecycle_preserves_link_and_check_rejection(populated_v2, tmp_path, statement):
+    assert migrate_database(populated_v2, backup_path=tmp_path / "before.db").to_version == 3
+    with transaction(populated_v2) as connection, pytest.raises(sqlite3.IntegrityError):
+        connection.execute(statement)

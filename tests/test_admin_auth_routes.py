@@ -64,6 +64,23 @@ def test_uninitialized_admin_responses_are_503_no_store(admin_client):
         assert "init-admin" in response.text
 
 
+@pytest.mark.parametrize("version", [1, 2])
+def test_admin_http_refuses_older_schema(admin_settings, http_app_factory, tmp_path, version):
+    from course_platform.admin.auth import AdminService
+    from course_platform.database import migrate_database
+    from course_platform.security import CsrfService
+
+    path = tmp_path / "older.db"
+    migrate_database(path, through_version=version)
+    settings = replace(admin_settings, database_path=path)
+    app = http_app_factory([router], settings, {"admin_service": AdminService(path), "csrf_service": CsrfService(path)})
+    with TestClient(app, follow_redirects=False) as client:
+        for method, route in (("GET", "/admin/login"), ("POST", "/admin/login")):
+            response = client.request(method, route, data={} if method == "POST" else None)
+            assert response.status_code == 503 and response.headers["cache-control"] == "no-store"
+            assert "migration" in response.text
+
+
 @pytest.mark.parametrize("origin,csrf", [(None, True), ("http://evil.test", True), ("http://testserver", False)])
 def test_login_pre_csrf_and_origin_are_required(admin_client, admin_service, db_path, origin, csrf):
     admin_service.initialize_owner("owner", PASSWORD)

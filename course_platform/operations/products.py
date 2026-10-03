@@ -123,6 +123,13 @@ def _promise_hash(data: ProductInput) -> str:
     return hashlib.sha256(_json(data.model_dump()).encode("utf-8")).hexdigest()
 
 
+def _page_offset(page: int) -> int:
+    # Bound before multiplication or binding, for both management lists.
+    if type(page) is not int or not 1 <= page <= ((2**63 - 1) // 20 + 1):
+        raise BusinessError("invalid_filter", "Invalid page.", 400)
+    return (page - 1) * 20
+
+
 def _record(row) -> ProductRecord:
     try:
         data = ProductInput.model_validate_json(row["description"])
@@ -198,7 +205,7 @@ class ProductService:
         if data.course_id and not connection.execute("SELECT 1 FROM courses WHERE course_id=?", (data.course_id,)).fetchone():
             raise BusinessError("course_missing", "Choose an existing course.", 400)
 
-    def _insert(self, connection, actor, data):
+    def _insert(self, connection, actor, data, *, request_id=None):
         self._relations(connection, data)
         now = to_db_time(self.clock())
         cursor = connection.execute("""INSERT INTO products
@@ -206,9 +213,9 @@ class ProductService:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (data.course_id, data.title, _json(data.model_dump()), data.category_id,
              data.policy.access_days if data.policy else None, data.policy.update_policy if data.policy else None,
-             actor.admin_id, now, now))
+             actor.admin_id if actor else None, now, now))
         record = _record(self._row(connection, cursor.lastrowid))
-        append_event(connection, self._event(actor, "product.create", record.id,
+        append_event(connection, self._event(actor, "product.create", record.id, request_id=request_id,
                                             changes={"status": "draft", "revision": 1}))
         return record
 
@@ -307,8 +314,6 @@ class ProductService:
             self._revision(row, revision)
             if status not in ("paused", "archived") or (status == "paused" and row["status"] != "active"):
                 raise BusinessError("product_transition", "This product status transition is unavailable.", 409)
-            if not row["course_id"]:
-                raise BusinessError("course_missing", "Bind a course before archiving this draft.", 409)
             connection.execute("UPDATE products SET status=?, revision=revision+1, updated_at=? WHERE id=? AND revision=?",
                                (status, to_db_time(self.clock()), product_id, revision))
             record = _record(self._row(connection, product_id))
@@ -355,7 +360,8 @@ class ProductService:
 
     def list_products(self, *, status: str | None, category_id: int | None, title: str,
                       page: int) -> tuple[list[ProductRecord], int]:
-        if type(page) is not int or page < 1 or (status is not None and status not in ("draft", "active", "paused", "archived")):
+        offset = _page_offset(page)
+        if status is not None and status not in ("draft", "active", "paused", "archived"):
             raise BusinessError("invalid_filter", "Invalid product filter or page.", 400)
         conditions, values = [], []
         for column, value in (("status", status), ("category_id", category_id)):
@@ -369,12 +375,19 @@ class ProductService:
         with closing(open_readonly(self.db_path)) as connection:
             total = connection.execute("SELECT count(*) FROM products" + where, values).fetchone()[0]
             rows = connection.execute("SELECT * FROM products" + where + " ORDER BY id DESC LIMIT 20 OFFSET ?",
-                                      (*values, (page - 1) * 20)).fetchall()
+                                      (*values, offset)).fetchall()
             return [_record(row) for row in rows], total
 
     def list_categories(self) -> list[dict]:
         with closing(open_readonly(self.db_path)) as connection:
             return [dict(row) for row in connection.execute("SELECT * FROM categories ORDER BY sort_order, id")]
+
+    def list_category_page(self, *, page: int) -> tuple[list[dict], int]:
+        offset = _page_offset(page)
+        with closing(open_readonly(self.db_path)) as connection:
+            total = connection.execute("SELECT count(*) FROM categories").fetchone()[0]
+            rows = connection.execute("SELECT * FROM categories ORDER BY sort_order, id LIMIT 20 OFFSET ?", (offset,))
+            return [dict(row) for row in rows], total
 
     def list_courses(self) -> list[dict]:
         with closing(open_readonly(self.db_path)) as connection:
@@ -403,21 +416,24 @@ class ProductService:
 
     def ensure_draft_in_tx(self, connection: sqlite3.Connection, course_id: str) -> ProductRecord:
         """Import only, inside the caller's transaction; never overwrite a product."""
+        if not connection.in_transaction:
+            raise BusinessError("import_transaction", "Import requires the caller's transaction.", 409)
         row = connection.execute("SELECT * FROM products WHERE course_id=?", (course_id,)).fetchone()
         if row:
             return _record(row)
         course = connection.execute("SELECT * FROM courses WHERE course_id=?", (course_id,)).fetchone()
-        owner = connection.execute("SELECT id FROM admins WHERE role='owner' AND enabled=1").fetchone()
-        if not course or not owner:
-            raise BusinessError("import_prerequisites", "Import requires an existing course and enabled owner.", 409)
-        actor = Actor(owner["id"], secrets.token_hex(16))
+        if not course:
+            raise BusinessError("course_missing", "Import requires an existing course.", 409)
+        request_id = secrets.token_hex(16)
         slug = course["category"] if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", course["category"]) else (
             "import-" + hashlib.sha256(course["category"].encode()).hexdigest()[:20])
         category = connection.execute("SELECT id FROM categories WHERE slug=?", (slug,)).fetchone()
         if category:
             category_id = category["id"]
         else:
-            category_id = connection.execute("INSERT INTO categories (slug, name, created_by) VALUES (?, ?, ?)",
-                                             (slug, course["category"], actor.admin_id)).lastrowid
-            append_event(connection, self._event(actor, "category.create", category_id, changes={"revision": 1}))
-        return self._insert(connection, actor, ProductInput(title=course["title"], category_id=category_id, course_id=course_id))
+            category_id = connection.execute("INSERT INTO categories (slug, name, created_by) VALUES (?, ?, NULL)",
+                                             (slug, course["category"])).lastrowid
+            append_event(connection, self._event(None, "category.create", category_id,
+                                                request_id=request_id, changes={"revision": 1}))
+        return self._insert(connection, None,
+            ProductInput(title=course["title"], category_id=category_id, course_id=course_id), request_id=request_id)

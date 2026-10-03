@@ -12,6 +12,14 @@
 
 状态：用户已批准实施计划及分任务实现、逐项独立审查方式，2026-10-02 开始执行。此文中的接口、文件、测试是验收约定，不表示全部功能已存在或测试已通过。
 
+### Controller schema alignment ruling（Task 5 fix1）
+
+历史 v001/v002 保持不可变。Task 5 fix1 新增 `migrations/v003_product_lifecycle.py`，本阶段最新版本为 3：允许 draft/archived 商品不绑定课程，active/paused 仍必须绑定真实课程；自动导入商品允许如实记录 `created_by=NULL`，导入可先于 owner 初始化，不伪造 owner，不赋予默认销售政策。人工商品写入仍必须通过 enabled owner 的 Actor。导入使用调用方事务，保留既有商品、历史 ID/路径/发行快照和引用图。已有库升级必须使用不覆盖的备份，重建和验证在同一事务内完成，保留外键、约束及父侧 link triggers。
+
+Task 10 原定 `v003_legacy_delivery.py` 改为 `v004_legacy_delivery.py`，届时最新版本为 4；Task 10/11/12 中所有旧版 v3 legacy 迁移目标、示例和 fresh 启动要求均由 v4 取代（例如 `before-v3.db` → `before-v4.db`、`through_version=3` → `through_version=4`）。Task 11 的 fresh 扫描/商品导入先于 owner 初始化；Task 12 的打包、恢复及 runbook 按版本 4 验证。legacy 转换仍仅属于 Task 10，本轮不实现。AdminService 使用安装代码的 latest schema 检查就绪，拒绝较旧或未知历史。
+
+Task 5 分类管理列表每页 20 项，选择器使用独立完整 lookup；无绑定草稿必须可以归档。
+
 ## Global Constraints
 
 - 单管理员，`role=owner`；业务写入记录 `actor_admin_id`；不做邀请、注册、多人权限界面、站内支付或公开生成服务。

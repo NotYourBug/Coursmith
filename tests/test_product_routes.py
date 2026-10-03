@@ -245,6 +245,40 @@ def test_product_page_logout_uses_owner_revision(product_client, product_owner, 
     assert not product_client.cookies.get("coursmith_admin")
 
 
+def test_http_archives_unbound_draft(product_client, product_owner, published_product_data, product_service):
+    login(product_client)
+    response = post(product_client, "/admin/products/new", form_data(published_product_data) | {"course_id": ""})
+    assert response.status_code == 303
+    page = product_client.get(response.headers["location"])
+    assert 'action="/admin/products/1/archive"' in page.text
+    assert post(product_client, "/admin/products/1/archive", {"revision": "1"}).status_code == 303
+    assert product_service.get_product(1).status == "archived"
+    assert post(product_client, "/admin/products/1/archive", {"revision": "1"}).status_code == 409
+
+
+def test_http_category_management_paginates_but_selectors_remain_complete(
+        product_client, product_owner, product_service):
+    for index in range(21):
+        product_service.save_category(product_owner, None, None, f"category-{index}", f"分类 {index}", index, True)
+    login(product_client)
+    first = product_client.get("/admin/categories")
+    second = product_client.get("/admin/categories?page=2")
+    assert first.status_code == second.status_code == 200
+    assert 'action="/admin/categories/20"' in first.text and 'action="/admin/categories/21"' not in first.text
+    assert len(re.findall(r'action="/admin/categories/[0-9]+"', first.text)) == 20
+    assert re.findall(r'action="/admin/categories/[0-9]+"', second.text) == ['action="/admin/categories/21"']
+    assert "下一页" in first.text and "上一页" in second.text
+    selector = product_client.get("/admin/products/new")
+    assert '<option value="21"' in selector.text
+
+
+@pytest.mark.parametrize("path", ["/admin/products", "/admin/categories"])
+def test_http_overflow_page_is_safe(product_client, product_owner, path):
+    login(product_client)
+    response = product_client.get(path, params={"page": "999999999999999999"})
+    assert response.status_code == 400 and response.headers["cache-control"] == "no-store"
+
+
 @pytest.mark.parametrize("operation", ["create", "update", "activate", "set_status", "save_category", "record_denial", "inspect"])
 def test_sync_product_work_does_not_block_event_loop(
         product_app, product_client, product_owner, active_product, product_service, monkeypatch, operation):

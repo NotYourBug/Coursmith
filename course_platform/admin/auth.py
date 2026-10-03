@@ -13,7 +13,7 @@ from pathlib import Path
 from pwdlib import PasswordHash
 
 from ..audit import AuditEvent, append_event, record_denial
-from ..database import check_database, from_db_time, open_readonly, to_db_time, transaction
+from ..database import LATEST_SCHEMA_VERSION, check_database, from_db_time, open_readonly, to_db_time, transaction
 from ..domain import Actor, BusinessError, Clock, utc_now
 from .security import RateLimiter
 
@@ -79,7 +79,7 @@ class AdminService:
 
     def _require_schema(self) -> None:
         try:
-            if check_database(self.db_path)["version"] != 2:
+            if check_database(self.db_path)["version"] != LATEST_SCHEMA_VERSION:
                 raise BusinessError("admin_unavailable", "Run the approved database migration first.", 503)
         except BusinessError:
             raise BusinessError("admin_unavailable", "Run the approved database migration first.", 503) from None

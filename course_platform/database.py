@@ -158,7 +158,31 @@ def backup_database(source: Path, target: Path) -> None:
         raise
 
 
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 3
+
+
+@contextmanager
+def _product_rebuild_transaction(path: Path):
+    """Only the v003 runner may suspend FKs, on its own short-lived connection.
+
+    SQLite requires this pragma before BEGIN. The whole upgrade and graph
+    validation stay atomic; normal application transactions retain FK=ON.
+    """
+    with closing(connect(path)) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            yield connection
+            connection.commit()
+        except BaseException as exc:
+            connection.rollback()
+            if isinstance(exc, sqlite3.OperationalError) and (
+                getattr(exc, "sqlite_errorcode", 0) & 0xFF
+            ) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise BusinessError("database_busy", "Database is busy; retry the operation.", 503) from None
+            raise
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
 
 
 @dataclass(frozen=True)
@@ -193,9 +217,9 @@ def check_database(path: Path) -> dict[str, object]:
 def migrate_database(
     path: Path, *, backup_path: Path | None = None, through_version: int | None = None
 ) -> MigrationReport:
-    from .migrations import v001_baseline, v002_operations
+    from .migrations import v001_baseline, v002_operations, v003_product_lifecycle
 
-    migrations = (v001_baseline, v002_operations)
+    migrations = (v001_baseline, v002_operations, v003_product_lifecycle)
     path = Path(path)
     target = LATEST_SCHEMA_VERSION if through_version is None else through_version
     if type(target) is not int or not 1 <= target <= LATEST_SCHEMA_VERSION:
@@ -208,7 +232,9 @@ def migrate_database(
         return MigrationReport(current, current, None)
     if existing and backup_path is None:
         raise BusinessError("backup_required", "An unused backup path is required before upgrading.", 409)
-    with transaction(path, immediate=True) as connection:
+    migration_transaction = (_product_rebuild_transaction(path) if current < 3 <= target
+                             else transaction(path, immediate=True))
+    with migration_transaction as connection:
         # Acquire the writer boundary before backup. A separate read connection
         # can copy the committed source while this lock prevents concurrent writes.
         locked_version = _version(connection)
@@ -223,7 +249,10 @@ def migrate_database(
         for version in range(current + 1, target + 1):
             migrations[version - 1].apply(connection)
             connection.execute("INSERT INTO schema_migrations VALUES (?, ?)", (version, to_db_time(utc_now())))
-        validate_database(connection)
+        if target >= 3:
+            v003_product_lifecycle.validate_graph(connection)
+        else:
+            validate_database(connection)
     return MigrationReport(current, target, actual_backup)
 
 

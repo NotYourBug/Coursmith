@@ -183,7 +183,11 @@ async def product_archive(request: Request):
 @router.get("/categories", name="category_list")
 def category_list(request: Request):
     session = require_owner(request)
-    return _page(request, session, "categories.html", categories=request.app.state.product_service.list_categories())
+    page = _integer(request.query_params.get("page", "1"))
+    categories, total = request.app.state.product_service.list_category_page(page=page)
+    return _page(request, session, "categories.html", categories=categories, total=total, page=page,
+        previous=f"/admin/categories?page={page - 1}" if page > 1 else None,
+        next_page=f"/admin/categories?page={page + 1}" if page * 20 < total else None)
 
 
 async def _category_post(request, *, update=False):

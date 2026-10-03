@@ -2,6 +2,7 @@
 {% block title %}分类管理 · 智课工坊{% endblock %}
 {% block content %}
 <h1>分类管理</h1><p>分类改名不改变课程身份或路径。已引用分类保留，可停用。</p>
+<p>共 {{ total }} 项，第 {{ page }} 页，每页 20 项。</p>
 <h2>新建分类</h2>
 <form method="post" action="/admin/categories" class="product-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -20,4 +21,5 @@
   <label class="check"><input type="checkbox" name="enabled" {% if category.enabled %}checked{% endif %}>启用</label><button type="submit">保存分类</button>
 </form></section>
 {% endfor %}
+<nav aria-label="分类分页">{% if previous %}<a href="{{ previous }}">上一页</a>{% endif %}{% if next_page %}<a href="{{ next_page }}">下一页</a>{% endif %}</nav>
 {% endblock %}

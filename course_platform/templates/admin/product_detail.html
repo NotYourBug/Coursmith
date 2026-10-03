@@ -16,7 +16,7 @@
     <button type="submit">重新检查并启用</button>
   </form>
   {% if product.status == 'active' %}<form method="post" action="/admin/products/{{ product.id }}/pause"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ product.revision }}"><button type="submit">暂停销售</button></form>{% endif %}
-  {% if data.course_id %}<form method="post" action="/admin/products/{{ product.id }}/archive"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ product.revision }}"><button type="submit">归档商品</button></form>{% endif %}
+  <form method="post" action="/admin/products/{{ product.id }}/archive"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ product.revision }}"><button type="submit">归档商品</button></form>
   {% endif %}
 </section>
 {{ super() }}
