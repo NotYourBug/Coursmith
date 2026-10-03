@@ -162,7 +162,9 @@ class CsrfService:
         if not (equal_tokens & equal_hash):
             raise BusinessError("invalid_csrf", "CSRF token is invalid or expired.", 403)
 
-    def consume_challenge(self, scope: str, form_token: str, cookie_token: str) -> None:
+    def consume_challenge(self, scope: str, form_token: str, cookie_token: str, *,
+                          audit_denial: bool = True) -> None:
+        """Consume once; an HTTP boundary may own its correlated denial audit."""
         try:
             # The conditional update binds this digest to its persisted scope,
             # lifetime and unused state; the pair check cannot authorize alone.
@@ -178,7 +180,7 @@ class CsrfService:
                 if updated.rowcount != 1:
                     raise BusinessError("invalid_csrf", "CSRF token is invalid or expired.", 403)
         except BusinessError as error:
-            if error.code == "invalid_csrf":
+            if error.code == "invalid_csrf" and audit_denial:
                 record_denial(self.db_path, AuditEvent(
                     actor_admin_id=None, object_type="request", object_id="prechallenge",
                     action="security.csrf", reason="invalid_csrf", outcome="denied",

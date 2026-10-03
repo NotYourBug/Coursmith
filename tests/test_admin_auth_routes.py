@@ -1,8 +1,13 @@
 """Real HTTP, cookies, CSRF and owner CLI boundaries."""
 
 import re
+import asyncio
+import hashlib
+import json
 from dataclasses import replace
+from threading import Event, Thread
 
+import httpx
 import pytest
 from fastapi import APIRouter, Request
 from fastapi.testclient import TestClient
@@ -282,3 +287,210 @@ def test_admin_method_rejections_are_private_and_correlated(admin_client):
         assert response.headers.get("cache-control") == "no-store"
         assert response.headers["x-request-id"] in response.text
         assert response.headers["allow"]
+
+
+@pytest.mark.parametrize("path,fault,status,code", [
+    (path, fault, status, code)
+    for path in ("/admin/login", "/admin/logout", "/admin/account/password")
+    for fault, status, code in [("origin", 403, "invalid_origin"),
+                               ("oversized", 413, "body_too_large"),
+                               ("media", 415, "unsupported_media_type"),
+                               ("form", 400, "invalid_form"), ("csrf", 403, "invalid_csrf")]
+] + [
+    ("/admin/login", "password", 401, "invalid_credentials"),
+    ("/admin/login", "lockout", 429, "rate_limited"),
+    ("/admin/logout", "malformed_revision", 409, "stale_revision"),
+    ("/admin/logout", "stale_revision", 409, "stale_revision"),
+    ("/admin/account/password", "malformed_revision", 409, "stale_revision"),
+    ("/admin/account/password", "stale_revision", 409, "stale_revision"),
+    ("/admin/account/password", "confirmation", 400, "password_mismatch"),
+    ("/admin/account/password", "password", 401, "invalid_credentials"),
+])
+def test_rejected_auth_post_has_one_safe_correlated_audit(
+        admin_client, admin_service, db_path, path, fault, status, code):
+    # Removing route denial recording loses boundary errors; omitting the
+    # service marker duplicates audits for credential/CSRF/rate denials.
+    admin_service.initialize_owner("owner", PASSWORD)
+    assert sign_in(admin_client).status_code == 303
+    old_token = admin_client.cookies.get("coursmith_admin")
+    page = admin_client.get("/admin/login" if path == "/admin/login" else "/admin/account/password")
+    csrf = field(page, "csrf_token")
+    data = {"csrf_token": csrf, "revision": "1", "username": "owner", "password": PASSWORD,
+            "current_password": PASSWORD, "new_password": "replacement-secret",
+            "confirm_password": "replacement-secret"}
+    headers = {"Origin": "http://testserver", "X-Request-ID": "client-secret-id"}
+    if fault == "lockout":
+        for _ in range(5):
+            admin_service.rate_limiter.record_login_failure("owner", "independent-source")
+    with transaction(db_path) as connection:
+        last_id = connection.execute("SELECT max(id) FROM admin_events").fetchone()[0]
+    if fault == "origin":
+        headers["Origin"] = "http://evil.test/secret-origin"
+    elif fault == "oversized":
+        data["secret-extra"] = "x" * 65536
+    elif fault == "csrf":
+        data["csrf_token"] = "b" * 43
+    elif fault == "malformed_revision":
+        data["revision"] = "secret-revision"
+    elif fault == "stale_revision":
+        data["revision"] = "0"
+    elif fault == "confirmation":
+        data["confirm_password"] = "different-secret"
+    elif fault == "password":
+        data["password"] = data["current_password"] = "incorrect-secret"
+    if fault in ("form", "media"):
+        response = admin_client.post(path, content="password=secret-wire&password=secret-wire",
+            headers={**headers, "Content-Type": "text/plain" if fault == "media"
+                     else "application/x-www-form-urlencoded"})
+    else:
+        response = admin_client.post(path, data=data, headers=headers)
+    assert response.status_code == status
+    with transaction(db_path) as connection:
+        events = [dict(row) for row in connection.execute("SELECT * FROM admin_events WHERE id>?", (last_id,))]
+        assert connection.execute("SELECT revision FROM admins").fetchone()[0] == 1
+        assert connection.execute("SELECT count(*) FROM admin_sessions WHERE revoked_at IS NULL").fetchone()[0] == 1
+    assert len(events) == 1
+    event = events[0]
+    action = {"/admin/login": "auth.login", "/admin/logout": "auth.logout",
+              "/admin/account/password": "admin.password_change"}[path]
+    assert (event["action"], event["outcome"], event["reason"]) == (action, "denied", code)
+    assert json.loads(event["changes_json"]) == {"error_code": code}
+    assert event["request_id"] == response.headers["x-request-id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", event["request_id"])
+    for secret in (PASSWORD, old_token, csrf, "b" * 43, "replacement-secret", "incorrect-secret",
+                   "different-secret", "client-secret-id", "secret-wire", "secret-revision"):
+        assert secret not in str(events)
+        assert hashlib.sha256(secret.encode()).hexdigest() not in str(events)
+    assert admin_service.require_session(old_token, request_id="retained").admin_id == 1
+
+
+@pytest.mark.parametrize("operation", ["login_verify", "password_verify", "password_hash",
+                                      "login_consume", "login_retry", "logout_session",
+                                      "password_retry_session"])
+def test_auth_work_does_not_block_unrelated_requests(
+        admin_app, admin_client, admin_service, csrf_service, monkeypatch, operation):
+    # A gate delays the real synchronous operation without replacing its
+    # outcome or persistence. Direct invocation in an async handler prevents
+    # our unrelated request from completing before the watchdog releases it.
+    from course_platform.admin import auth
+
+    admin_service.initialize_owner("owner", PASSWORD)
+    assert sign_in(admin_client).status_code == 303
+    path = "/admin/login" if operation.startswith("login") else "/admin/account/password"
+    if operation == "logout_session":
+        path = "/admin/logout"
+    page = admin_client.get("/admin/login" if path == "/admin/login" else "/admin/account/password")
+    data = {"csrf_token": field(page, "csrf_token"), "revision": "1", "username": "owner",
+            "password": PASSWORD, "current_password": PASSWORD,
+            "new_password": "replacement-pass", "confirm_password": "replacement-pass"}
+    headers = {"Origin": "http://evil.test" if operation == "login_retry" else "http://testserver"}
+    if operation == "password_retry_session":
+        data["confirm_password"] = "different-secret"
+    entered, release, progressed = Event(), Event(), Event()
+    calls = 0
+    target_call = 2 if operation == "password_retry_session" else 1
+    if operation.endswith("verify"):
+        target, name = auth, "_matches"
+    elif operation == "password_hash":
+        target, name = auth._PASSWORDS, "hash"
+    elif operation == "login_consume":
+        target, name = csrf_service, "consume_challenge"
+    elif operation == "login_retry":
+        target, name = csrf_service, "issue_challenge"
+    else:
+        target, name = admin_service, "require_session"
+    real_operation = getattr(target, name)
+
+    def gated(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == target_call:
+            entered.set()
+            assert release.wait(5), "watchdog did not release real auth work"
+        return real_operation(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, gated)
+
+    @admin_app.get("/unrelated")
+    async def unrelated():
+        return {"available": True}
+
+    def watchdog():
+        if entered.wait(5):
+            progressed.wait(1)
+        release.set()
+
+    watcher = Thread(target=watchdog)
+    watcher.start()
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=admin_app),
+                base_url="http://testserver", cookies=dict(admin_client.cookies.items())) as client:
+            pending = asyncio.create_task(client.post(path, data=data, headers=headers))
+            try:
+                reached = await asyncio.to_thread(entered.wait, 5)
+                probe = await client.get("/unrelated")
+                before_release = not release.is_set()
+                progressed.set()
+            finally:
+                release.set()
+            response = await pending
+            assert reached
+            assert probe.status_code == 200 and probe.json() == {"available": True}
+            assert before_release, "auth work prevented unrelated request progress"
+            assert response.status_code == (403 if operation == "login_retry" else
+                                            400 if operation == "password_retry_session" else 303)
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
+        watcher.join(timeout=5)
+
+
+@pytest.mark.parametrize("path", ["/admin/login", "/admin/logout", "/admin/account/password"])
+def test_real_sqlite_wait_does_not_block_unrelated_requests(admin_app, admin_client, admin_service, db_path, path):
+    admin_service.initialize_owner("owner", PASSWORD)
+    assert sign_in(admin_client).status_code == 303
+    page = admin_client.get("/admin/login" if path == "/admin/login" else "/admin/account/password")
+    data = {"csrf_token": field(page, "csrf_token"), "revision": "1", "username": "owner",
+            "password": PASSWORD, "current_password": PASSWORD,
+            "new_password": "replacement-pass", "confirm_password": "replacement-pass"}
+    locked, release, progressed = Event(), Event(), Event()
+
+    @admin_app.get("/unrelated")
+    async def unrelated():
+        return {"available": True}
+
+    def hold_writer():
+        # Independent real SQLite connection: requests must actually wait for
+        # this RESERVED lock, while the same ASGI loop serves another request.
+        with transaction(db_path, immediate=True):
+            locked.set()
+            progressed.wait(1)
+            release.set()
+
+    writer = Thread(target=hold_writer)
+    writer.start()
+    assert locked.wait(5)
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=admin_app),
+                base_url="http://testserver", cookies=dict(admin_client.cookies.items())) as client:
+            pending = asyncio.create_task(client.post(path, data=data, headers={"Origin": "http://testserver"}))
+            try:
+                await asyncio.sleep(0.05)
+                probe = await client.get("/unrelated")
+                before_release = not release.is_set() and not pending.done()
+            finally:
+                progressed.set()
+            response = await pending
+            assert probe.status_code == 200
+            assert before_release, "SQLite lock wait blocked the ASGI loop"
+            assert response.status_code == 303
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        progressed.set()
+        writer.join(timeout=5)

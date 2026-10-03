@@ -8,6 +8,7 @@ import secrets
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 from fastapi.routing import APIRoute
+from starlette.concurrency import run_in_threadpool
 
 from ...domain import Actor, BusinessError
 from ...security import check_origin, parse_unique_form, read_limited_body, source_key
@@ -17,6 +18,21 @@ from ..auth import AdminSession
 ADMIN_COOKIE = "coursmith_admin"
 CSRF_COOKIE = "coursmith_admin_csrf"
 LOGIN_CSRF_COOKIE = "coursmith_admin_login_csrf"
+_AUTH_POST_ACTIONS = {
+    "/admin/login": "auth.login", "/admin/logout": "auth.logout",
+    "/admin/account/password": "admin.password_change",
+}
+
+
+async def _audit_post_denial(request, error):
+    action = _AUTH_POST_ACTIONS.get(request.url.path) if request.method == "POST" else None
+    # A missing/unmigrated database cannot persist an audit. All initialized
+    # auth boundaries use fixed actions and the server's correlation ID.
+    if action and error.code != "admin_unavailable" and not getattr(error, "denial_recorded", False):
+        await run_in_threadpool(
+            request.app.state.admin_service._denial, getattr(request.state, "actor", None),
+            action, error, request_id=request.state.request_id,
+        )
 
 
 def _cookie(request, response, name, token, max_age):
@@ -84,6 +100,7 @@ class AdminRoute(APIRoute):
             try:
                 response = await handler(request)
             except BusinessError as error:
+                await _audit_post_denial(request, error)
                 if request.method == "GET" and error.status_code == 401:
                     response = RedirectResponse("/admin/login", status_code=303)
                 else:
@@ -98,15 +115,17 @@ router = APIRouter(prefix="/admin", route_class=AdminRoute)
 
 
 def require_owner(request: Request) -> AdminSession:
-    return request.app.state.admin_service.require_session(
+    session = request.app.state.admin_service.require_session(
         request.cookies.get(ADMIN_COOKIE, ""), request_id=request.state.request_id,
     )
+    request.state.actor = Actor(session.admin_id, request.state.request_id)
+    return session
 
 
 async def require_admin_post(request: Request) -> tuple[Actor, dict[str, str]]:
     if request.method != "POST":
         raise BusinessError("post_required", "This operation requires POST.", 405)
-    session = require_owner(request)
+    session = await run_in_threadpool(require_owner, request)
     check_origin(request, request.app.state.settings.site_origin)
     form = parse_unique_form(await read_limited_body(request, 65536))
     request.app.state.csrf_service.verify_bound_csrf(
@@ -138,21 +157,23 @@ def login_page(request: Request):
 
 @router.post("/login")
 async def login(request: Request):
-    request.app.state.admin_service.require_initialized()
+    await run_in_threadpool(request.app.state.admin_service.require_initialized)
     form = {}
     try:
         check_origin(request, request.app.state.settings.site_origin)
         form = parse_unique_form(await read_limited_body(request, 65536))
-        request.app.state.csrf_service.consume_challenge(
+        await run_in_threadpool(request.app.state.csrf_service.consume_challenge,
             "admin.login", form.get("csrf_token", ""), request.cookies.get(LOGIN_CSRF_COOKIE, ""),
+            audit_denial=False,
         )
-        grant = request.app.state.admin_service.login(
+        grant = await run_in_threadpool(request.app.state.admin_service.login,
             form.get("username", ""), form.get("password", ""),
             source=source_key(request, request.app.state.settings.trusted_proxy_cidrs),
             request_id=request.state.request_id, previous_token=request.cookies.get(ADMIN_COOKIE),
         )
     except BusinessError as error:
-        return _login_page(request, error=error, username=form.get("username", "")[:128])
+        await _audit_post_denial(request, error)
+        return await run_in_threadpool(_login_page, request, error=error, username=form.get("username", "")[:128])
     response = RedirectResponse("/admin", status_code=303)
     _cookie(request, response, ADMIN_COOKIE, grant.token, 28800)
     _cookie(request, response, CSRF_COOKIE, grant.csrf_token, 28800)
@@ -164,9 +185,9 @@ async def login(request: Request):
 @router.post("/logout")
 async def logout(request: Request):
     actor, form = await require_admin_post(request)
-    if _revision(form) != require_owner(request).revision:
+    if _revision(form) != (await run_in_threadpool(require_owner, request)).revision:
         raise BusinessError("stale_revision", "This form is stale; reload and try again.", 409)
-    request.app.state.admin_service.logout(request.cookies.get(ADMIN_COOKIE, ""), actor)
+    await run_in_threadpool(request.app.state.admin_service.logout, request.cookies.get(ADMIN_COOKIE, ""), actor)
     response = RedirectResponse("/admin/login", status_code=303)
     _clear_session(request, response)
     return response
@@ -186,12 +207,18 @@ async def password_change(request: Request):
         revision = _revision(form)
         if form.get("new_password", "") != form.get("confirm_password", ""):
             raise BusinessError("password_mismatch", "Password confirmation does not match.", 400)
-        request.app.state.admin_service.change_password(
+        await run_in_threadpool(request.app.state.admin_service.change_password,
             actor, form.get("current_password", ""), form.get("new_password", ""),
             expected_revision=revision,
         )
     except BusinessError as error:
-        session = require_owner(request)
+        await _audit_post_denial(request, error)
+        try:
+            session = await run_in_threadpool(require_owner, request)
+        except BusinessError:
+            # A concurrently revoked session must not add a second audit for
+            # the original rejection just to render its retry form.
+            raise error
         return _render(request, "password.html", status=error.status_code, error=error,
                        authenticated=True, revision=session.revision,
                        csrf_token=request.cookies.get(CSRF_COOKIE, ""))

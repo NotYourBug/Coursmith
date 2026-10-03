@@ -73,34 +73,45 @@ class RateLimiter:
     def check_login(self, account_key: str, source_key: str) -> None:
         try:
             with transaction(self.db_path, immediate=True) as connection:
-                now = self.clock()
-                blocked = []
-                for key in self._login_keys(account_key, source_key):
-                    row = _row(connection, key)
-                    if row is not None and row["blocked_until"] is not None:
-                        until = from_db_time(row["blocked_until"])
-                        if until > now:
-                            blocked.append(until)
-                if blocked:
-                    raise _RateLimitError(max(blocked), now)
+                self.check_login_in_tx(connection, account_key, source_key)
         except _RateLimitError:
             self._denial("login")
             raise
 
+    def check_login_in_tx(self, connection: sqlite3.Connection, account_key: str, source_key: str) -> None:
+        """Caller holds the writer lock through verification and failure updates.
+
+        The owning service records any denial after its transaction exits.
+        """
+        now = self.clock()
+        blocked = []
+        for key in self._login_keys(account_key, source_key):
+            row = _row(connection, key)
+            if row is not None and row["blocked_until"] is not None:
+                until = from_db_time(row["blocked_until"])
+                if until > now:
+                    blocked.append(until)
+        if blocked:
+            raise _RateLimitError(max(blocked), now)
+
     def record_login_failure(self, account_key: str, source_key: str) -> None:
         with transaction(self.db_path, immediate=True) as connection:
-            now = self.clock()
-            for key in self._login_keys(account_key, source_key):
-                row = _row(connection, key)
-                started, count = now, 1
-                if row is not None:
-                    blocked = from_db_time(row["blocked_until"]) if row["blocked_until"] else None
-                    if blocked is not None and blocked > now:
-                        continue  # Rejected retries must not prolong a lockout.
-                    previous = from_db_time(row["window_started_at"])
-                    if blocked is None and previous + timedelta(minutes=15) > now:
-                        started, count = previous, row["count"] + 1
-                _write(connection, key, started, count, now + timedelta(minutes=15) if count >= 5 else None)
+            self.record_login_failure_in_tx(connection, account_key, source_key)
+
+    def record_login_failure_in_tx(self, connection: sqlite3.Connection, account_key: str, source_key: str) -> None:
+        """Persist both counters on the owner's existing writer connection."""
+        now = self.clock()
+        for key in self._login_keys(account_key, source_key):
+            row = _row(connection, key)
+            started, count = now, 1
+            if row is not None:
+                blocked = from_db_time(row["blocked_until"]) if row["blocked_until"] else None
+                if blocked is not None and blocked > now:
+                    continue  # Rejected retries must not prolong a lockout.
+                previous = from_db_time(row["window_started_at"])
+                if blocked is None and previous + timedelta(minutes=15) > now:
+                    started, count = previous, row["count"] + 1
+            _write(connection, key, started, count, now + timedelta(minutes=15) if count >= 5 else None)
 
     def check_public(self, source_key: str) -> None:
         try:

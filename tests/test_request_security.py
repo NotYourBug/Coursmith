@@ -434,3 +434,44 @@ def test_bound_csrf_verification_does_not_rotate_session_nonce(csrf_service, db_
     with transaction(db_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM admin_sessions").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_composed_login_limits_use_the_callers_transaction(rate_limiter, db_path):
+    # Transaction helpers must see uncommitted counters and roll back with
+    # their owner, while standalone APIs retain independent denial auditing.
+    for _ in range(4):
+        rate_limiter.record_login_failure("owner", "source")
+    with pytest.raises(BusinessError) as error:
+        with transaction(db_path, immediate=True) as connection:
+            rate_limiter.check_login_in_tx(connection, "owner", "source")
+            rate_limiter.record_login_failure_in_tx(connection, "owner", "source")
+            rate_limiter.check_login_in_tx(connection, "owner", "source")
+    assert error.value.status_code == 429
+    with transaction(db_path) as connection:
+        rows = connection.execute("SELECT count, blocked_until FROM request_limits").fetchall()
+        assert len(rows) == 2 and all(tuple(row) == (4, None) for row in rows)
+        assert connection.execute("SELECT count(*) FROM admin_events").fetchone()[0] == 0
+    rate_limiter.check_login("owner", "source")
+    rate_limiter.record_login_failure("owner", "source")
+    with pytest.raises(BusinessError) as error:
+        rate_limiter.check_login("owner", "source")
+    assert error.value.headers == {"Retry-After": "900"}
+    with transaction(db_path) as connection:
+        events = [dict(row) for row in connection.execute("SELECT * FROM admin_events")]
+    assert len(events) == 1 and events[0]["action"] == "security.rate_limit"
+
+
+def test_csrf_boundary_can_own_denial_without_consuming_valid_challenge(csrf_service, db_path):
+    token = csrf_service.issue_challenge("admin.login")
+    with pytest.raises(BusinessError) as error:
+        csrf_service.consume_challenge("admin.login", token, "b" * 43, audit_denial=False)
+    assert error.value.status_code == 403
+    with transaction(db_path) as connection:
+        assert connection.execute("SELECT consumed_at FROM csrf_challenges").fetchone()[0] is None
+        assert connection.execute("SELECT count(*) FROM admin_events").fetchone()[0] == 0
+    csrf_service.consume_challenge("admin.login", token, token)
+    with pytest.raises(BusinessError):
+        csrf_service.consume_challenge("admin.login", token, token)
+    with transaction(db_path) as connection:
+        event = connection.execute("SELECT * FROM admin_events").fetchone()
+    assert event["action"] == "security.csrf" and event["outcome"] == "denied"

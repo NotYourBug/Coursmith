@@ -1,6 +1,9 @@
 """Owner authentication against real migrated SQLite and Argon2 hashes."""
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from threading import Event, local
 
 import pytest
 
@@ -194,3 +197,84 @@ def test_auth_write_denials_are_audited_after_rollback(admin_service, actor, db_
     assert event["action"] == action
     assert event["outcome"] == "denied"
     assert PASSWORD not in str(dict(event)) and grant.token not in str(dict(event))
+
+
+@pytest.mark.parametrize("bucket", ["account", "source"])
+def test_concurrent_login_cannot_pass_a_new_lockout(admin_service, db_path, clock, monkeypatch, bucket):
+    # Moving admission outside the writer transaction lets this queued login
+    # verify a password and issue a session after the fifth failure commits.
+    from course_platform.admin import auth
+
+    admin_service.initialize_owner("owner", PASSWORD)
+    existing = login(admin_service)
+    failed_account = " OWNER " if bucket == "account" else "unknown-owner"
+    failed_source = "other-source" if bucket == "account" else "source-hash"
+    for index in range(4):
+        with pytest.raises(BusinessError):
+            AdminService(db_path, clock=clock.now).login(
+                failed_account, "wrong-password", source=failed_source, request_id=f"seed-{index}",
+            )
+
+    queued, release = Event(), Event()
+    coordination = local()
+    real_transaction = auth.transaction
+    real_matches = auth._matches
+    queued_verifications = []
+
+    @contextmanager
+    def coordinated_transaction(*args, **kwargs):
+        if getattr(coordination, "pause", False):
+            queued.set()
+            assert release.wait(5), "test did not release the queued writer"
+        with real_transaction(*args, **kwargs) as connection:
+            yield connection
+
+    monkeypatch.setattr(auth, "transaction", coordinated_transaction)
+
+    def observed_matches(password, encoded):
+        if getattr(coordination, "pause", False):
+            queued_verifications.append(True)
+        return real_matches(password, encoded)
+
+    monkeypatch.setattr(auth, "_matches", observed_matches)
+
+    def queued_login():
+        coordination.pause = True
+        try:
+            AdminService(db_path, clock=clock.now).login(
+                "owner", PASSWORD, source="source-hash", request_id="queued-login",
+                previous_token=existing.token,
+            )
+            return 303
+        except BusinessError as error:
+            return error.status_code
+        finally:
+            coordination.pause = False
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(queued_login)
+        try:
+            assert queued.wait(5), "queued login never reached the writer boundary"
+            with pytest.raises(BusinessError) as fifth:
+                AdminService(db_path, clock=clock.now).login(
+                    failed_account, "wrong-password", source=failed_source, request_id="fifth-failure",
+                )
+            assert fifth.value.status_code == 401
+        finally:
+            release.set()
+        assert pending.result(timeout=5) == 429
+    assert queued_verifications == [], "a locked-out caller still tested a password"
+
+    assert admin_service.require_session(existing.token, request_id="retained").admin_id == 1
+    with transaction(db_path) as connection:
+        assert connection.execute("SELECT count(*) FROM admin_sessions").fetchone()[0] == 1
+        rows = connection.execute("SELECT count, blocked_until FROM request_limits").fetchall()
+        assert all(row["count"] == 5 and row["blocked_until"] == "2026-10-02T00:15:00+00:00" for row in rows)
+        events = [dict(row) for row in connection.execute(
+            "SELECT * FROM admin_events WHERE request_id IN ('fifth-failure', 'queued-login') ORDER BY id",
+        )]
+    assert [(row["action"], row["reason"], row["outcome"]) for row in events] == [
+        ("auth.login", "invalid_credentials", "denied"), ("auth.login", "rate_limited", "denied"),
+    ]
+    clock.advance(minutes=15)
+    assert login(AdminService(db_path, clock=clock.now)).token

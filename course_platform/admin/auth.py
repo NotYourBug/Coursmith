@@ -113,6 +113,7 @@ class AdminService:
             if not known:
                 actor = None
         record_denial(self.db_path, self._event(actor, action, error=error, request_id=request_id))
+        error.denial_recorded = True
 
     def initialize_owner(self, username: str, password: str) -> int:
         self._require_schema()
@@ -140,36 +141,42 @@ class AdminService:
         # Account bucket normalization is shared by every HTTP/CLI login.
         account = username.strip().casefold()
         try:
-            self.rate_limiter.check_login(account, source)
             with transaction(self.db_path, immediate=True) as connection:
+                self.rate_limiter.check_login_in_tx(connection, account, source)
+                connection.execute("SAVEPOINT login_verification")
                 owner = connection.execute("SELECT * FROM admins WHERE username=? AND role='owner'", (account,)).fetchone()
                 valid = _matches(password, owner["password_hash"] if owner else _DUMMY_HASH)
                 if owner is None or not valid or not owner["enabled"]:
-                    raise BusinessError("invalid_credentials", "Account or password is incorrect.", 401)
-                now = self.clock()
-                expires_at = now + timedelta(hours=8)
-                token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-                if previous_token:
-                    try:
-                        previous_hash = _digest(previous_token)
-                    except BusinessError:
-                        previous_hash = None
-                    if previous_hash:
-                        connection.execute(
-                            "UPDATE admin_sessions SET revoked_at=? WHERE token_hash=? AND admin_id=? AND revoked_at IS NULL",
-                            (to_db_time(now), previous_hash, owner["id"]),
-                        )
-                connection.execute(
-                    """INSERT INTO admin_sessions
-                       (token_hash, admin_id, csrf_hash, created_at, last_activity_at, expires_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (_digest(token), owner["id"], _digest(csrf), to_db_time(now), to_db_time(now), to_db_time(expires_at)),
-                )
-                append_event(connection, self._event(Actor(owner["id"], request_id), "auth.login"))
-                return AdminSessionGrant(token, csrf, expires_at)
+                    # Roll back rejected authentication, retaining the writer
+                    # lock while committing only its security counters.
+                    connection.execute("ROLLBACK TO login_verification")
+                    connection.execute("RELEASE login_verification")
+                    self.rate_limiter.record_login_failure_in_tx(connection, account, source)
+                else:
+                    connection.execute("RELEASE login_verification")
+                    now = self.clock()
+                    expires_at = now + timedelta(hours=8)
+                    token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+                    if previous_token:
+                        try:
+                            previous_hash = _digest(previous_token)
+                        except BusinessError:
+                            previous_hash = None
+                        if previous_hash:
+                            connection.execute(
+                                "UPDATE admin_sessions SET revoked_at=? WHERE token_hash=? AND admin_id=? AND revoked_at IS NULL",
+                                (to_db_time(now), previous_hash, owner["id"]),
+                            )
+                    connection.execute(
+                        """INSERT INTO admin_sessions
+                           (token_hash, admin_id, csrf_hash, created_at, last_activity_at, expires_at)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (_digest(token), owner["id"], _digest(csrf), to_db_time(now), to_db_time(now), to_db_time(expires_at)),
+                    )
+                    append_event(connection, self._event(Actor(owner["id"], request_id), "auth.login"))
+                    return AdminSessionGrant(token, csrf, expires_at)
+            raise BusinessError("invalid_credentials", "Account or password is incorrect.", 401)
         except BusinessError as error:
-            if error.code == "invalid_credentials":
-                self.rate_limiter.record_login_failure(account, source)
             self._denial(None, "auth.login", error, request_id=request_id)
             raise
 
