@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from course_platform.database import open_readonly, transaction
 from course_platform.domain import Actor, BusinessError
-from course_platform.operations.codes import BatchInput, CodeService
+from course_platform.operations.codes import BatchInput
 from course_platform.operations.products import SalesChecklist
 
 
@@ -104,15 +104,29 @@ def test_replacement_inherits_snapshot_and_replay_precedes_revision(code_service
     assert caught.value.status_code == 409
 
 
-def test_batch_replace_keeps_redeemed_items(code_service, active_product, actor, db_path, clock):
+def test_batch_replace_keeps_redeemed_items(code_service, active_product, actor, db_path,
+                                          entitlement_service, progress_service):
     first = issue(code_service, active_product, count=3)
-    # Task7 MUST replace this direct used_at simulation with real redemption,
-    # then recheck entitlement/credential/session/progress preservation.
-    with transaction(db_path) as connection:
-        connection.execute("UPDATE access_codes SET used_at=? WHERE id=1", (clock.now().isoformat(),))
-    receipt = code_service.replace_unused(actor, first.batch_id, 1, "明文丢失", "batch-replace")
+    redeemed = entitlement_service.redeem(first.codes[0].raw_code, expected_course_id=None, request_id="redeem")
+    session = redeemed.session
+    progress_service.set_completed(session.session_id, session.course_id, 1, True)
+    protected = {table: rows(db_path, f"SELECT * FROM {table}") for table in
+                 ("entitlements", "recovery_credentials", "sessions", "entitlement_progress")}
+    used_code = rows(db_path, "SELECT * FROM access_codes WHERE id=1")
+    with pytest.raises(BusinessError) as caught:
+        code_service.replace_unused(actor, first.batch_id, 1, "明文丢失", "stale-batch")
+    assert caught.value.code == "stale_revision"
+    receipt = code_service.replace_unused(actor, first.batch_id, 2, "明文丢失", "batch-replace")
     assert len(receipt.codes) == 2
-    assert code_service.replace_unused(actor, first.batch_id, 1, "明文丢失", "batch-replace").codes == ()
+    assert code_service.replace_unused(actor, first.batch_id, 2, "明文丢失", "batch-replace").codes == ()
+    assert rows(db_path, "SELECT * FROM access_codes WHERE id=1") == used_code
+    assert used_code[0]["used_at"]
+    for table, before in protected.items():
+        assert rows(db_path, f"SELECT * FROM {table}") == before
+    assert protected["recovery_credentials"][0]["revoked_at"] is None
+    assert protected["sessions"][0]["revoked_at"] is None
+    assert entitlement_service.require_session(session.session_id, session.course_id).entitlement_id == session.entitlement_id
+    assert progress_service.get_progress(session.session_id, session.course_id) == {1: True}
     original = rows(db_path, "SELECT id, used_at, voided_at, revision FROM access_codes WHERE batch_id=? ORDER BY id", (first.batch_id,))
     assert original[0]["used_at"] and original[0]["voided_at"] is None and original[0]["revision"] == 1
     assert all(row["voided_at"] and row["revision"] == 2 for row in original[1:])

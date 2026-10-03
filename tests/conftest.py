@@ -230,6 +230,33 @@ def code_service(db_path, clock):
 
 
 @pytest.fixture
+def entitlement_service(db_path, clock):
+    from course_platform.delivery.entitlements import EntitlementService
+
+    return EntitlementService(db_path, clock=clock.now)
+
+
+@pytest.fixture
+def progress_service(db_path, clock, entitlement_service):
+    from course_platform.delivery.progress import ProgressService
+
+    return ProgressService(db_path, clock=clock.now, entitlement_service=entitlement_service)
+
+
+@pytest.fixture
+def issued_code(code_service, active_product, actor):
+    from course_platform.operations.codes import BatchInput
+
+    return code_service.issue_batch(actor, BatchInput(product_id=active_product.id, purpose="sale"),
+                                   "issued-code").codes[0]
+
+
+@pytest.fixture
+def redeemed(entitlement_service, issued_code):
+    return entitlement_service.redeem(issued_code.raw_code, expected_course_id=None, request_id="redeem-1")
+
+
+@pytest.fixture
 def code_app(http_app_factory, admin_settings, admin_service, csrf_service, rate_limiter,
              product_service, code_service):
     from course_platform.admin.routes.auth import router as auth_router
