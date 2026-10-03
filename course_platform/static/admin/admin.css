@@ -24,4 +24,9 @@ fieldset { display: grid; gap: .75rem; border: 1px solid #cbd6d3; }
 .product-list li { padding: .6rem 0; overflow-wrap: anywhere; }
 section { margin-bottom: 2rem; }
 button:disabled { opacity: .5; cursor: default; }
+.table-wrap { overflow-x: auto; margin: 1rem 0; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: .75rem; text-align: left; vertical-align: top; border-bottom: 1px solid #cbd6d3; }
+td { overflow-wrap: anywhere; }
+.table-wrap form { min-width: 12rem; margin-bottom: .75rem; }
 @media (max-width: 600px) { main { margin: 1rem; padding: 1.25rem; } header form { margin-left: 0; } }

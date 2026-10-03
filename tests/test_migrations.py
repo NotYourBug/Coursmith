@@ -58,7 +58,7 @@ def test_failed_migration_rolls_back(legacy_db, tmp_path, monkeypatch):
     with closing(sqlite3.connect(legacy_db)) as connection:
         assert connection.execute("SELECT name FROM sqlite_master WHERE name IN ('schema_migrations', 'products')").fetchall() == []
     monkeypatch.setattr(v002_operations, "apply", original)
-    assert migrate_database(legacy_db, backup_path=tmp_path / "retry.db").to_version == 3
+    assert migrate_database(legacy_db, backup_path=tmp_path / "retry.db").to_version == 4
 
 
 def test_existing_upgrade_requires_non_overwriting_backup(legacy_db, tmp_path):
@@ -102,7 +102,7 @@ def test_v1_can_be_upgraded_separately(tmp_path):
     with pytest.raises(BusinessError):
         migrate_database(path)
     report = migrate_database(path, backup_path=tmp_path / "v1.db")
-    assert (report.from_version, report.to_version) == (1, 3)
+    assert (report.from_version, report.to_version) == (1, 4)
 
 
 @pytest.mark.parametrize("versions", [[3], [1, 3], [2]])
@@ -118,7 +118,7 @@ def test_unknown_or_noncontiguous_versions_are_rejected(tmp_path, versions):
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [0, 4, -1, True, 1.5])
+@pytest.mark.parametrize("version", [0, 5, -1, True, 1.5])
 def test_invalid_target_is_rejected_before_creating_database(tmp_path, version):
     path = tmp_path / "new.db"
     with pytest.raises(BusinessError):
@@ -166,7 +166,7 @@ def test_cli_check_only_does_not_modify_source(legacy_db, tmp_path, monkeypatch,
     assert '"version": 0' in output and '"integrity": "ok"' in output
     assert legacy_db.read_bytes() == before
     assert cli.main(["migrate", "--backup", str(tmp_path / "before.db")]) == 0
-    assert '"to_version": 3' in capsys.readouterr().out
+    assert '"to_version": 4' in capsys.readouterr().out
 
 
 def test_cli_check_missing_database_does_not_create_it(tmp_path, monkeypatch, capsys):
@@ -401,7 +401,7 @@ def populated_v2(tmp_path):
 
 def test_product_lifecycle_fresh_allows_import_and_unbound_archive(tmp_path):
     path = tmp_path / "fresh.db"
-    assert migrate_database(path).to_version == 3
+    assert migrate_database(path, through_version=3).to_version == 3
     with transaction(path) as connection:
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         connection.execute("INSERT INTO products (title, created_by) VALUES ('Auto draft', NULL)")
@@ -418,7 +418,7 @@ def test_product_lifecycle_upgrade_preserves_populated_graph_and_backup(populate
     with closing(connect(populated_v2)) as connection:
         triggers = [tuple(row) for row in connection.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' ORDER BY name")]
     backup = tmp_path / "before-v3.db"
-    report = migrate_database(populated_v2, backup_path=backup)
+    report = migrate_database(populated_v2, backup_path=backup, through_version=3)
     assert (report.from_version, report.to_version, report.backup_path) == (2, 3, backup)
     assert operations_snapshot(backup) == before
     after = operations_snapshot(populated_v2)
@@ -431,7 +431,7 @@ def test_product_lifecycle_upgrade_preserves_populated_graph_and_backup(populate
         assert connection.execute("SELECT title FROM product_titles WHERE id=1").fetchone()[0] == "Original"
         assert connection.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='product_title_lookup'").fetchone()
     bytes_before_rerun = populated_v2.read_bytes()
-    assert migrate_database(populated_v2).to_version == 3
+    assert migrate_database(populated_v2, through_version=3).to_version == 3
     assert populated_v2.read_bytes() == bytes_before_rerun
 
 
@@ -442,7 +442,7 @@ def test_product_lifecycle_restores_views_before_their_triggers(populated_v2, tm
             UPDATE products SET title=NEW.title WHERE id=OLD.id; END""")
     failure = None
     try:
-        migrate_database(populated_v2, backup_path=tmp_path / "before-view.db")
+        migrate_database(populated_v2, backup_path=tmp_path / "before-view.db", through_version=3)
     except sqlite3.OperationalError as error:
         failure = str(error)
     assert failure is None, f"Migration must preserve an existing view and its trigger: {failure}"
@@ -475,7 +475,7 @@ def test_product_lifecycle_failure_rolls_back_graph_history_and_schema(populated
     monkeypatch.setattr(v003_product_lifecycle, "apply", fail_after_rebuild)
     backup = tmp_path / "recovery-v2.db"
     with pytest.raises(RuntimeError if fault == "exception" else BusinessError):
-        migrate_database(populated_v2, backup_path=backup)
+        migrate_database(populated_v2, backup_path=backup, through_version=3)
     assert operations_snapshot(populated_v2) == operations_snapshot(backup) == before
     with transaction(populated_v2) as connection:
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
@@ -485,7 +485,7 @@ def test_product_lifecycle_failure_rolls_back_graph_history_and_schema(populated
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute("UPDATE products SET status='archived' WHERE id=3")
     monkeypatch.setattr(v003_product_lifecycle, "apply", original)
-    assert migrate_database(populated_v2, backup_path=tmp_path / "retry-v2.db").to_version == 3
+    assert migrate_database(populated_v2, backup_path=tmp_path / "retry-v2.db", through_version=3).to_version == 3
 
 
 def test_product_lifecycle_upgrade_requires_new_backup(populated_v2, tmp_path):
@@ -494,7 +494,7 @@ def test_product_lifecycle_upgrade_requires_new_backup(populated_v2, tmp_path):
     occupied.write_bytes(b"existing backup")
     for target in (None, populated_v2, occupied):
         with pytest.raises(BusinessError):
-            migrate_database(populated_v2, backup_path=target)
+            migrate_database(populated_v2, backup_path=target, through_version=3)
         assert operations_snapshot(populated_v2) == before
     assert occupied.read_bytes() == b"existing backup"
 
@@ -513,6 +513,6 @@ def test_product_lifecycle_upgrade_requires_new_backup(populated_v2, tmp_path):
     "UPDATE products SET category_id=999 WHERE id=3",
 ])
 def test_product_lifecycle_preserves_link_and_check_rejection(populated_v2, tmp_path, statement):
-    assert migrate_database(populated_v2, backup_path=tmp_path / "before.db").to_version == 3
+    assert migrate_database(populated_v2, backup_path=tmp_path / "before.db", through_version=3).to_version == 3
     with transaction(populated_v2) as connection, pytest.raises(sqlite3.IntegrityError):
         connection.execute(statement)

@@ -186,7 +186,7 @@ def test_owner_initialization_rejects_older_schema(tmp_path, version):
 
 def test_latest_schema_readiness_rejects_unknown_history(admin_service, db_path):
     with transaction(db_path) as connection:
-        connection.execute("INSERT INTO schema_migrations VALUES (4, '2026-10-02')")
+        connection.execute("INSERT INTO schema_migrations VALUES (5, '2026-10-02')")
     with pytest.raises(BusinessError) as err:
         admin_service.initialize_owner("owner", PASSWORD)
     assert err.value.code == "admin_unavailable"

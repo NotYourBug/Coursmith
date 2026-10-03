@@ -220,3 +220,31 @@ def product_client(product_app):
 
     with TestClient(product_app, client=("198.51.100.7", 50000), follow_redirects=False) as client:
         yield client
+
+
+@pytest.fixture
+def code_service(db_path, clock):
+    from course_platform.operations.codes import CodeService
+
+    return CodeService(db_path, clock=clock.now)
+
+
+@pytest.fixture
+def code_app(http_app_factory, admin_settings, admin_service, csrf_service, rate_limiter,
+             product_service, code_service):
+    from course_platform.admin.routes.auth import router as auth_router
+    from course_platform.admin.routes.products import router as product_router
+    from course_platform.admin.routes.codes import router
+
+    return http_app_factory([auth_router, product_router, router], admin_settings, {
+        "admin_service": admin_service, "csrf_service": csrf_service,
+        "rate_limiter": rate_limiter, "product_service": product_service, "code_service": code_service,
+    })
+
+
+@pytest.fixture
+def code_client(code_app):
+    from fastapi.testclient import TestClient
+
+    with TestClient(code_app, client=("198.51.100.7", 50000), follow_redirects=False) as client:
+        yield client

@@ -1,0 +1,14 @@
+{% extends "admin/base.html" %}
+{% block title %}一次性激活码 · 智课工坊{% endblock %}
+{% block content %}
+<h1>批次 {{ receipt.batch_id }} · 一次性交付</h1>
+<p>明文仅首次成功响应显示，离开或刷新后不可找回。请立即复制或下载 CSV。</p>
+{% if receipt.replayed %}<p>本请求已完成。重放只返回批次信息，不再显示明文。若丢失，请在批次详情补发未使用码。</p>{% else %}
+<button id="copy-codes" type="button">复制激活码</button> <button id="download-csv" type="button">下载当前 CSV</button><p id="copy-status" role="status"></p>
+<div class="table-wrap"><table id="issued-code-table"><thead><tr><th>公开编号</th><th>激活码</th><th>激活截止（Asia/Shanghai）</th><th>备注</th></tr></thead><tbody>
+{% for code in receipt.codes %}<tr><td>{{ code.public_id }}</td><td>{{ code.raw_code }}</td><td>{{ display_time(code.expires_at.isoformat()) }}</td><td>{{ note }}</td></tr>{% endfor %}
+</tbody></table></div>
+<script src="/static/admin/admin.js" defer></script>
+{% endif %}
+<p><a href="/admin/code-batches/{{ receipt.batch_id }}">批次详情</a></p>
+{% endblock %}

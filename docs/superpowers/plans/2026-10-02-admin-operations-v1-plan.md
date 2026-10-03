@@ -22,6 +22,16 @@ Task 5 分类管理列表每页 20 项，选择器使用独立完整 lookup；�
 
 ## Global Constraints
 
+### Binding additive delivery storage amendment（Task 6, supersedes future version numbers above）
+
+Task 5 的 lifecycle v003/latest3 不变。Task 6 新增不可变的 `migrations/v004_delivery_storage.py`，本阶段 latest4；历史 v001/v002/v003 不得修改。Task 10 的 legacy conversion 改为 `v005_legacy_delivery.py`/latest5；Task 11/12 的 fresh factory、restore、wheel 和 runbook 最终按 latest5 检查，所有较早 legacy v3/v4 名称和版本例子由此取代。Task 6 只实现 issuance，不实现 Task 7/9 的兑换、订单状态转换或 Task 10 的 legacy 转换。
+
+已批准的存储契约：`code_batches/access_codes/entitlements/orders.issued_policy_json` 保存完整严格校验的 `IssuedPolicy`（商品/课程身份、slug/version/hash、title/support 和独立 online/PDF/ZIP/access/update-policy）。NULL 仅表示历史未核验，不生成默认快照，不写明文 CS/LK/session ID。Task 6 为新批次和新码填写快照；Task 7/9 分别填写权益、订单快照并消费原发行承诺。`code_batches.revision` 从 1 起；单码修改及批量修改递增批次修订号，Task 7 兑换也须递增源批次修订号以使批量表单失效。
+
+订单保留历史 `status='paid'/'refunded'` 和所有外部退款字段，新增 nullable `paid_at`、`delivery_state`、`delivered_at`；`delivery_state` 允许 `recorded/code_ready/delivered/activated`，历史行保持 NULL。Task 7 的 activated 和 Task 9 的业务状态使用独立 delivery_state，退款仍通过原 status 表示；Task 9 自己实现状态转换，并核对订单唯一发行和一订单一份权益。`CodeService.issue_in_tx` 的调用方拥有 BEGIN IMMEDIATE、事务提交/回滚及回滚后的域拒绝审计，传入订单登记的原始 IssuedPolicy，不以商品当前政策替换；消费方不得绕过可售检查。
+
+v004 为纯 additive DDL。已有 v003 升级必须先以不覆盖目标做 SQLite backup；升级/版本行/图验证原子提交，失败整体回滚，重跑保持幂等，保留所有历史记录、哈希、引用、时间、快照、索引/视图/触发器及迁移行；后台就绪检查拒绝旧版或未知 schema，不自动升级生产库。Task 6 的 `test_batch_replace_keeps_redeemed_items` 当前只模拟 used_at，Task 7 必须改为真实兑换，再复验权益/凭证/会话/进度均保留。
+
 - 单管理员，`role=owner`；业务写入记录 `actor_admin_id`；不做邀请、注册、多人权限界面、站内支付或公开生成服务。
 - 一商品对应一课程，一订单对应一个商品/一份权益；不删除课程、订单、已使用码和权益；M1 不改正文、不重排/删除章节、不承诺自动升级。
 - 商品状态 `draft → active → paused → active`，另有归档；现有课程对应商品初始 `draft`；只有销售检查有效的 `active` 商品可新发码。暂停不妨碍已发码兑换和有效权益访问。
