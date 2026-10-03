@@ -9,7 +9,7 @@
 <body>
   <header><a class="brand" href="/admin">智课工坊 · 管理后台</a>
     {% if authenticated %}
-    <nav aria-label="后台导航"><a href="/admin">后台首页</a><a href="/admin/account/password">修改密码</a></nav>
+    <nav aria-label="后台导航"><a href="/admin">后台首页</a>{% if request.app.state.product_service is defined %}<a href="{{ request.url_for('product_list') }}">商品管理</a><a href="{{ request.url_for('category_list') }}">分类管理</a>{% endif %}<a href="/admin/account/password">修改密码</a></nav>
     <form action="/admin/logout" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="revision" value="{{ revision }}">
@@ -20,8 +20,8 @@
   <main id="main">
     {% if error %}<div role="alert" class="error"><p>{{ error.message }}</p><p>关联 ID：{{ request_id }}</p></div>{% endif %}
     {% block content %}
-    <h1>管理后台</h1><p>已登录 owner 账号，可管理自己的登录与密码。</p>
-    <section><h2>后续阶段</h2><p>课程与商品管理、发码、订单及权益管理将在后续阶段提供。</p></section>
+    <h1>管理后台</h1><p>已登录 owner 账号，可通过后台导航管理已提供的功能。</p>
+    <section><h2>后续阶段</h2><p>发码、订单及权益管理将在后续阶段提供。</p></section>
     {% endblock %}
   </main>
   <footer>智课工坊 · 单 owner 管理</footer>

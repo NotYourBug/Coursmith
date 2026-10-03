@@ -1,0 +1,23 @@
+{% extends "admin/base.html" %}
+{% block title %}分类管理 · 智课工坊{% endblock %}
+{% block content %}
+<h1>分类管理</h1><p>分类改名不改变课程身份或路径。已引用分类保留，可停用。</p>
+<h2>新建分类</h2>
+<form method="post" action="/admin/categories" class="product-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Slug（小写字母、数字、单连字符） <input name="slug" pattern="[a-z0-9]+(-[a-z0-9]+)*" required maxlength="100"></label>
+  <label>名称 <input name="name" required maxlength="200"></label>
+  <label>排序 <input type="number" name="sort_order" value="0" required></label>
+  <label class="check"><input type="checkbox" name="enabled" checked>启用</label><button type="submit">创建分类</button>
+</form>
+{% for category in categories %}
+<section><h2>{{ category.name }}{{ '（停用）' if not category.enabled else '' }}</h2>
+<form method="post" action="/admin/categories/{{ category.id }}" class="product-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ category.revision }}">
+  <label>Slug <input name="slug" value="{{ category.slug }}" pattern="[a-z0-9]+(-[a-z0-9]+)*" required maxlength="100"></label>
+  <label>名称 <input name="name" value="{{ category.name }}" required maxlength="200"></label>
+  <label>排序 <input type="number" name="sort_order" value="{{ category.sort_order }}" required></label>
+  <label class="check"><input type="checkbox" name="enabled" {% if category.enabled %}checked{% endif %}>启用</label><button type="submit">保存分类</button>
+</form></section>
+{% endfor %}
+{% endblock %}

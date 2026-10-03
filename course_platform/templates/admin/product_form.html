@@ -1,0 +1,27 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ '编辑商品' if product else '新建商品' }} · 智课工坊{% endblock %}
+{% block content %}
+<h1>{{ '编辑商品' if product else '新建商品' }}</h1>
+{% if not categories %}<p>请先<a href="/admin/categories">创建分类</a>。</p>{% endif %}
+<form method="post" action="/admin/products/{{ product.id if product else 'new' }}" class="product-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% if product %}<input type="hidden" name="revision" value="{{ product.revision }}">{% endif %}
+  <label>商品标题 <input name="title" value="{{ data.title if data else '' }}" required maxlength="300"></label>
+  <label>分类 <select name="category_id" required>{% for category in categories %}<option value="{{ category.id }}" {% if data and category.id == data.category_id %}selected{% endif %}>{{ category.name }}{{ '（停用）' if not category.enabled else '' }}</option>{% endfor %}</select></label>
+  <label>绑定课程 <select name="course_id"><option value="">暂不绑定（草稿）</option>{% for course in courses %}<option value="{{ course.course_id }}" {% if data and data.course_id == course.course_id %}selected{% endif %}>{{ course.title }} · {{ course.course_id }}</option>{% endfor %}</select></label>
+  <p>仅无历史记录的草稿可改变课程绑定；历史买家始终使用原课程。</p>
+  {% for key, label in [('synopsis','简介'),('audience','适用人群'),('prerequisites','先修要求'),('ai_disclosure','AI 披露'),('support_text','售后支持')] %}
+  <label>{{ label }} <textarea name="{{ key }}" rows="3">{{ data[key] if data else '' }}</textarea></label>
+  {% endfor %}
+  <label>学习成果（每行一项） <textarea name="outcomes" rows="4">{{ data.outcomes | join('\n') if data else '' }}</textarea></label>
+  <label>销售渠道（每行：名称|HTTPS 链接） <textarea name="channels" rows="3">{% if data %}{% for channel in data.channels %}{{ channel.name }}|{{ channel.url }}{{ '\n' if not loop.last else '' }}{% endfor %}{% endif %}</textarea></label>
+  <fieldset><legend>学习期限与交付格式</legend>
+    {% set policy = data.policy if data else none %}
+    <label>学习期限 <select name="access_mode"><option value="">尚未选择（草稿）</option><option value="days" {% if policy and policy.access_mode == 'days' %}selected{% endif %}>固定天数</option><option value="no_fixed_expiry" {% if policy and policy.access_mode == 'no_fixed_expiry' %}selected{% endif %}>无固定到期日</option></select></label>
+    <label>学习天数（1–3650；无固定到期日须留空） <input type="number" name="access_days" min="1" max="3650" value="{{ policy.access_days if policy and policy.access_days else '' }}"></label>
+    {% for key, label in [('online','在线学习'),('pdf','PDF 下载'),('zip','ZIP 下载')] %}<label class="check"><input type="checkbox" name="{{ key }}" {% if policy and policy[key] %}checked{% endif %}>{{ label }}</label>{% endfor %}
+    <input type="hidden" name="update_policy" value="current_version"><p>仅交付当前版本，不承诺自动升级。</p>
+  </fieldset>
+  <button type="submit" {% if not categories %}disabled{% endif %}>保存商品</button>
+</form>
+{% endblock %}

@@ -156,3 +156,67 @@ def legacy_db(tmp_path):
     finally:
         connection.close()
     return path
+
+
+@pytest.fixture
+def product_service(db_path, clock):
+    from course_platform.operations.products import ProductService
+
+    return ProductService(db_path, clock=clock.now)
+
+
+@pytest.fixture
+def product_owner(admin_service, actor):
+    admin_service.initialize_owner("owner", "example-pass-123")
+    return actor
+
+
+@pytest.fixture
+def published_product_data(product_service, product_owner, fixture_package, db_path):
+    from course_platform.content import CourseManifest
+    from course_platform.content_inspection import inspect_package
+    from course_platform.database import sync_course, transaction
+    from course_platform.operations.products import AccessPolicy, ProductInput, SalesChannel
+
+    manifest = CourseManifest.model_validate_json((fixture_package / "manifest.json").read_bytes())
+    sync_course(manifest, fixture_package, db_path)
+    inspection = inspect_package(fixture_package)
+    with transaction(db_path) as connection:
+        connection.execute("UPDATE courses SET package_hash=? WHERE course_id=?",
+                           (inspection.fingerprint, manifest.course_id))
+    category_id = product_service.save_category(product_owner, None, None, "technical", "技术", 0, True)
+    return ProductInput(title="可售课程", category_id=category_id, synopsis="课程简介",
+        audience="初学者", prerequisites="无", outcomes=["完成练习"], course_id=manifest.course_id,
+        ai_disclosure=manifest.ai_disclosure, support_text="邮件支持",
+        channels=[SalesChannel(name="店铺", url="https://shop.example/course")],
+        policy=AccessPolicy(access_mode="days", access_days=30, online=True, pdf=False,
+                            zip=False, update_policy="current_version"))
+
+
+@pytest.fixture
+def active_product(product_service, product_owner, published_product_data):
+    from course_platform.operations.products import SalesChecklist
+
+    draft = product_service.create(product_owner, published_product_data)
+    return product_service.activate(product_owner, draft.id, draft.revision,
+        SalesChecklist(quality=True, sources=True, ai=True, mobile=True, downloads=True))
+
+
+@pytest.fixture
+def product_app(http_app_factory, admin_settings, admin_service, csrf_service, rate_limiter,
+                product_service):
+    from course_platform.admin.routes.auth import router as auth_router
+    from course_platform.admin.routes.products import router
+
+    return http_app_factory([auth_router, router], admin_settings, {
+        "admin_service": admin_service, "csrf_service": csrf_service,
+        "rate_limiter": rate_limiter, "product_service": product_service,
+    })
+
+
+@pytest.fixture
+def product_client(product_app):
+    from fastapi.testclient import TestClient
+
+    with TestClient(product_app, client=("198.51.100.7", 50000), follow_redirects=False) as client:
+        yield client
