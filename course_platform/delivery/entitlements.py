@@ -196,6 +196,23 @@ class EntitlementService:
                     (code["course_id"], code["product_id"], code["order_id"], code_id, policy.version, policy.package_hash,
                      policy.access.access_days, policy.access.update_policy, to_db_time(expires) if expires else None,
                      code["purpose"], code["created_by"], to_db_time(now), code["issued_policy_json"])).lastrowid
+                if code["order_id"] is not None and code["verified_at"] is not None:
+                    # Only copy genuine modern-sale purchase evidence. Historical
+                    # unverified orders retain NULL and cannot reset credentials.
+                    issuer = connection.execute("""SELECT created_by, purpose, issued_policy_json
+                        FROM code_batches WHERE id=?""", (code["batch_id"],)).fetchone()
+                    if (code["purpose"] != "sale" or issuer["purpose"] != "sale"
+                        or not code["verified_by"] or not code["verified_reason"]
+                        or not code["created_by"] or issuer["created_by"] != code["created_by"]
+                        or not connection.execute("SELECT 1 FROM admins WHERE id=? AND role='owner'", (code["verified_by"],)).fetchone()
+                        or not order["paid_at"] or from_db_time(order["paid_at"]) > from_db_time(code["verified_at"])
+                        or from_db_time(code["verified_at"]) > now
+                        or IssuedPolicy.model_validate_json(order["issued_policy_json"] or "null") != policy
+                        or IssuedPolicy.model_validate_json(issuer["issued_policy_json"] or "null") != policy):
+                        raise _denied("redemption")
+                    self._reason(code["verified_reason"])
+                    connection.execute("""UPDATE entitlements SET verified_at=?, verified_by=?, verified_reason=? WHERE id=?""",
+                        (code["verified_at"], code["verified_by"], code["verified_reason"], entitlement_id))
                 recovery = "LK-" + secrets.token_urlsafe(32)
                 connection.execute("INSERT INTO recovery_credentials (entitlement_id, credential_hash, created_at) VALUES (?, ?, ?)",
                                    (entitlement_id, _hash(recovery), to_db_time(now)))

@@ -94,7 +94,9 @@ class RecoveryService:
         if policy is None or row["legacy_state"] == "pending_verification":
             raise BusinessError("verification_required", "Verify the original entitlement before resetting credentials.", 409)
         source = connection.execute("""SELECT c.purpose, c.product_id, c.course_id, c.order_id,
-            c.issued_policy_json, c.used_at, c.voided_at, b.purpose AS batch_purpose
+            c.issued_policy_json, c.used_at, c.voided_at, c.created_by, c.verified_at, c.verified_by,
+            c.verified_reason, b.purpose AS batch_purpose, b.created_by AS batch_creator,
+            b.issued_policy_json AS batch_policy
             FROM access_codes c JOIN code_batches b ON b.id=c.batch_id WHERE c.id=?""",
             (row["source_code_id"],)).fetchone()
         if (not source or source["purpose"] != row["purpose"] or source["batch_purpose"] != row["purpose"]
@@ -106,6 +108,13 @@ class RecoveryService:
             return
         if row["purpose"] != "sale":
             raise BusinessError("verification_required", "Verify the original entitlement before resetting credentials.", 409)
+        if (not source["created_by"] or source["created_by"] != source["batch_creator"]
+            or source["created_by"] != row["created_by"]
+            or not connection.execute("SELECT 1 FROM admins WHERE id=? AND role='owner'", (source["created_by"],)).fetchone()
+            or IssuedPolicy.model_validate_json(source["batch_policy"] or "null") != policy
+            or (source["verified_at"], source["verified_by"], source["verified_reason"]) != (
+                row["verified_at"], row["verified_by"], row["verified_reason"])):
+            raise BusinessError("purchase_verification_required", "Original sale issuer and recorded code/entitlement proof must agree.", 409)
         order = connection.execute("""SELECT product_id, status, paid_at, issued_policy_json
             FROM orders WHERE id=?""", (row["order_id"],)).fetchone()
         if (not order or order["status"] != "paid" or order["product_id"] != row["product_id"]
@@ -132,6 +141,8 @@ class RecoveryService:
                 row, policy = self.entitlements._entitlement(connection, entitlement_id)
                 CodeService._revision(row, revision)
                 self._verification(connection, row, policy)
+                if row["purpose"] == "sale" and from_db_time(row["verified_at"]) > self.clock():
+                    raise BusinessError("purchase_verification_required", "Purchase verification must already have occurred.", 409)
                 now = to_db_time(self.clock())
                 connection.execute("""UPDATE recovery_credentials SET revoked_at=?, revision=revision+1
                     WHERE entitlement_id=? AND revoked_at IS NULL""", (now, entitlement_id))

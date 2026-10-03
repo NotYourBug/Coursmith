@@ -237,6 +237,13 @@ def entitlement_service(db_path, clock):
 
 
 @pytest.fixture
+def order_service(db_path, clock):
+    from course_platform.operations.orders import OrderService
+
+    return OrderService(db_path, clock=clock.now)
+
+
+@pytest.fixture
 def progress_service(db_path, clock, entitlement_service):
     from course_platform.delivery.progress import ProgressService
 

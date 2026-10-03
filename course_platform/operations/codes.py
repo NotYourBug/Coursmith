@@ -157,7 +157,8 @@ class CodeService:
     def _code(connection, code_id):
         CodeService._identity(code_id)
         row = connection.execute("""SELECT c.id, c.course_id, c.product_id, c.batch_id, c.order_id, c.revision,
-            c.used_at, c.voided_at, c.issued_policy_json, b.purpose, b.activation_days, b.notes
+            c.used_at, c.voided_at, c.issued_policy_json, c.verified_at, c.verified_by, c.verified_reason,
+            b.purpose, b.activation_days, b.notes
             FROM access_codes c LEFT JOIN code_batches b ON b.id=c.batch_id WHERE c.id=?""", (code_id,)).fetchone()
         if not row:
             raise BusinessError("code_missing", "Code does not exist.", 404)
@@ -303,6 +304,12 @@ class CodeService:
             self._void(connection, row, reason)
         receipt = self._insert(connection, actor, policies, data, order_ids=[row["order_id"] for row in rows],
             replaces=[row["id"] for row in rows], storage_key=_hash("code.reissue:" + key_hash))
+        for row, code in zip(rows, receipt.codes, strict=True):
+            # A replacement retains the original recorded purchase proof;
+            # resetting a credential must not invent or overwrite that evidence.
+            if row["order_id"] is not None:
+                connection.execute("""UPDATE access_codes SET verified_at=?, verified_by=?, verified_reason=?
+                    WHERE code_number=?""", (row["verified_at"], row["verified_by"], row["verified_reason"], code.public_id))
         for batch_id in {row["batch_id"] for row in rows}:
             connection.execute("UPDATE code_batches SET revision=revision+1 WHERE id=?", (batch_id,))
         self._save_request(connection, actor, "code.reissue", key_hash, digest, receipt)

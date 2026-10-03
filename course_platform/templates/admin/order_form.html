@@ -1,0 +1,16 @@
+{% extends "admin/base.html" %}
+{% block title %}登记店铺订单 · 智课工坊{% endblock %}
+{% block content %}
+<h1>登记店铺已付款订单</h1><p>一个订单对应一个商品及一份权益；不支持多商品订单。</p>
+<form method="post" action="/admin/orders/new">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+<label>渠道 <input name="channel" required maxlength="200"></label>
+<label>店铺 ID <input name="shop_id" required maxlength="200"></label>
+<label>外部订单号 <input name="external_order_id" required maxlength="300" autocomplete="off"></label>
+<label>商品 <select name="product_id" required>{% for product in products %}<option value="{{ product.id }}">{{ product.title }}</option>{% endfor %}</select></label>
+<label>实付金额（人民币分，0 可用）<input name="paid_cents" type="number" min="0" step="1" required></label>
+<label>付款时间（ISO8601，带时区，如 2026-10-02T08:00:00+08:00；存储 UTC）<input name="paid_at" required></label>
+<label>核验备注 <textarea name="note" maxlength="1000"></textarea></label>
+<label><input type="checkbox" name="confirm" required> 已在店铺核验本订单已付款、商品及金额，确认登记</label>
+<button type="submit">登记</button></form><p><a href="/admin/orders">订单列表</a></p>
+{% endblock %}
