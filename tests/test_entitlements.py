@@ -278,6 +278,39 @@ def test_session_device_limit_requires_explicit_eviction(entitlement_service, re
         assert entitlement_service.require_session(grant.session_id, grant.course_id).entitlement_expires_at == redeemed.entitlement_expires_at
 
 
+def test_equal_timestamp_eviction_uses_hash_order_not_insertion_order(entitlement_service,
+        progress_service, redeemed, db_path, clock):
+    grants = [redeemed.session]
+    progress_service.set_completed(grants[0].session_id, grants[0].course_id, 1, True)
+    for _ in range(2):
+        with transaction(db_path, immediate=True) as connection:
+            grants.append(entitlement_service.create_session_in_tx(connection, grants[0].entitlement_id,
+                                                                  evict_oldest=False))
+    # Keep real issued rights and session rows; fix only token hashes so this
+    # equal-time fixture always has hash order opposite to insertion order.
+    tokens = sorted(["a" * 43, "b" * 43, "c" * 43],
+                    key=lambda token: hashlib.sha256(token.encode()).hexdigest(), reverse=True)
+    hashes = [hashlib.sha256(token.encode()).hexdigest() for token in tokens]
+    with transaction(db_path, immediate=True) as connection:
+        for grant, session_hash in zip(grants, hashes, strict=True):
+            connection.execute("UPDATE sessions SET session_hash=? WHERE session_hash=?",
+                (session_hash, hashlib.sha256(grant.session_id.encode()).hexdigest()))
+    stored = rows(db_path, "SELECT session_hash, created_at FROM sessions ORDER BY rowid")
+    assert [row["session_hash"] for row in stored] == hashes == sorted(hashes, reverse=True)
+    assert {row["created_at"] for row in stored} == {to_db_time(clock.now())}
+    with transaction(db_path, immediate=True) as connection:
+        fourth = entitlement_service.create_session_in_tx(connection, grants[0].entitlement_id,
+                                                         evict_oldest=True)
+    assert rows(db_path, "SELECT session_hash FROM sessions WHERE revoked_at IS NOT NULL") == [
+        {"session_hash": hashes[-1]}]
+    assert len(rows(db_path, "SELECT session_hash FROM sessions WHERE revoked_at IS NULL")) == 3
+    with pytest.raises(BusinessError):
+        entitlement_service.require_session(tokens[-1], grants[0].course_id)
+    for token in [*tokens[:-1], fourth.session_id]:
+        assert entitlement_service.require_session(token, grants[0].course_id).entitlement_expires_at == redeemed.entitlement_expires_at
+        assert progress_service.get_progress(token, grants[0].course_id) == {1: True}
+
+
 def test_session_helpers_use_callers_connection_and_rollback(entitlement_service, redeemed, db_path):
     before = rows(db_path, "SELECT * FROM sessions")
     with pytest.raises(RuntimeError):

@@ -254,7 +254,7 @@ class EntitlementService:
             row, _ = self._entitlement(connection, entitlement_id)
             now = self.clock()
             active = [session for session in connection.execute("""SELECT session_hash, expires_at
-                FROM sessions WHERE entitlement_id=? AND revoked_at IS NULL ORDER BY created_at, rowid""", (entitlement_id,))
+                FROM sessions WHERE entitlement_id=? AND revoked_at IS NULL ORDER BY created_at, session_hash""", (entitlement_id,))
                 if from_db_time(session["expires_at"]) > now]
             if len(active) >= 3:
                 if not evict_oldest:
