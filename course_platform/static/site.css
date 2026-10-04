@@ -4,3 +4,10 @@ pre,.code-block,table{max-width:100%;overflow-x:auto}
 :root{--bg:#f8f3e9;--paper:#fffdfa;--ink:#293548;--muted:#756f64;--line:#e8ddcb;--blue:#2f74df;--gold:#e2b54b;--green:#2c8c70;--shadow:0 18px 46px rgba(109,89,55,.1)}
 select{min-height:48px;padding:.7rem .8rem;border:1px solid #cfc4b3;border-radius:10px;background:#fff;font:inherit}.button-secondary{background:#2f74df}.preview-link{display:inline-block;margin-left:.75rem;color:var(--green);font-size:.85rem;font-weight:700;text-decoration:none}select:focus-visible{outline:3px solid #f0b83f;outline-offset:3px}
 pre,.code-block{overflow-x: auto}
+:root { overflow-wrap: anywhere; }
+.lesson-shell { max-width: 960px; margin: auto; padding: 1rem; min-width: 0; }
+.lesson-shell nav { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem; }
+.lesson-body { min-width: 0; }
+.lesson-body img { max-width: 100%; height: auto; }
+.lesson-body pre, .lesson-body table { max-width: 100%; overflow-x: auto; display: block; }
+.learning-list form { margin-top: .75rem; }

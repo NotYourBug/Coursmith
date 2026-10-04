@@ -7,12 +7,15 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Final
 
 from .content import CourseManifest
 from .domain import BusinessError, utc_now
 
 
-SCHEMA = """
+# Immutable historical six-table baseline consumed by v001. Never extend or
+# change this SQL; all subsequent schema changes belong to new migrations.
+SCHEMA: Final[str] = """
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS courses (
@@ -266,57 +269,36 @@ def initialize_database(path: Path) -> None:
 
 
 def sync_course(manifest: CourseManifest, content_path: Path, database_path: Path) -> None:
-    """Upsert catalog metadata while keeping lesson HTML on disk."""
+    """Import one release; identical repeats never overwrite its baseline."""
+    from .content_inspection import inspect_package, read_verified_file
+    root = Path(content_path).resolve()
+    inspection = inspect_package(root)
+    actual = CourseManifest.model_validate_json(read_verified_file(root, "manifest.json", inspection.fingerprint))
+    if actual != manifest:
+        raise BusinessError("manifest_mismatch", "Provided manifest does not match the release.", 409)
+    # Historical callers still build the unchanged six-table source database.
+    # Production startup initializes latest schema explicitly before this call.
     initialize_database(database_path)
-    now = to_db_time(utc_now())
-    with transaction(database_path) as connection:
-        connection.execute(
-            """
-            INSERT INTO courses
-                (course_id, slug, title, category, version, status, content_path, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(course_id) DO UPDATE SET
-                slug=excluded.slug, title=excluded.title, category=excluded.category,
-                version=excluded.version, status=excluded.status,
-                content_path=excluded.content_path, updated_at=excluded.updated_at
-            """,
-            (
-                manifest.course_id,
-                manifest.slug,
-                manifest.title,
-                manifest.category,
-                manifest.version,
-                manifest.status,
-                str(Path(content_path).resolve()),
-                now,
-            ),
-        )
-        connection.executemany(
-            """
-            INSERT INTO chapters (course_id, chapter_number, title, path, free_preview)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(course_id, chapter_number) DO UPDATE SET
-                title=excluded.title,
-                path=excluded.path,
-                free_preview=excluded.free_preview
-            """,
-            [
-                (
-                    manifest.course_id,
-                    chapter.number,
-                    chapter.title,
-                    chapter.path,
-                    int(chapter.free_preview),
-                )
-                for chapter in manifest.chapters
-            ],
-        )
-        chapter_numbers = [chapter.number for chapter in manifest.chapters]
-        placeholders = ", ".join("?" for _ in chapter_numbers)
-        connection.execute(
-            f"""
-            DELETE FROM chapters
-            WHERE course_id = ? AND chapter_number NOT IN ({placeholders})
-            """,
-            (manifest.course_id, *chapter_numbers),
-        )
+    with transaction(database_path, immediate=True) as connection:
+        existing = connection.execute("SELECT * FROM courses WHERE course_id=?", (manifest.course_id,)).fetchone()
+        values = (manifest.course_id, manifest.slug, manifest.title, manifest.category,
+                  manifest.version, manifest.status, str(root))
+        chapters = [(c.number, c.title, c.path, int(c.free_preview)) for c in manifest.chapters]
+        if existing:
+            saved = tuple(existing[k] for k in ("course_id", "slug", "title", "category", "version", "status", "content_path"))
+            stored = [tuple(row) for row in connection.execute(
+                "SELECT chapter_number, title, path, free_preview FROM chapters WHERE course_id=? ORDER BY chapter_number",
+                (manifest.course_id,))]
+            if saved != values or stored != chapters or (
+                "package_hash" in existing.keys() and existing["package_hash"] != inspection.fingerprint):
+                raise BusinessError("release_exists", "M1 forbids changing an existing release; retain its original content.", 409)
+            return
+        connection.execute("""INSERT INTO courses
+            (course_id, slug, title, category, version, status, content_path, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (*values, to_db_time(utc_now())))
+        connection.executemany("""INSERT INTO chapters
+            (course_id, chapter_number, title, path, free_preview) VALUES (?, ?, ?, ?, ?)""",
+            [(manifest.course_id, *chapter) for chapter in chapters])
+        if "package_hash" in [row[1] for row in connection.execute("PRAGMA table_info(courses)")]:
+            connection.execute("UPDATE courses SET package_hash=? WHERE course_id=?",
+                               (inspection.fingerprint, manifest.course_id))

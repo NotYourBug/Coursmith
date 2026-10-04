@@ -1,0 +1,6 @@
+{% extends "admin/base.html" %}
+{% block content %}<h1>审计记录</h1>
+<form method="get"><label>管理员 ID<input name="actor" value="{{ request.query_params.get('actor','') }}"></label><label>操作<input name="action" value="{{ request.query_params.get('action','') }}"></label><label>对象 ID<input name="object" value="{{ request.query_params.get('object','') }}"></label><label>起始 UTC 时间<input name="from" placeholder="2026-10-02T00:00:00+00:00" value="{{ request.query_params.get('from','') }}"></label><label>截止 UTC 时间<input name="to" value="{{ request.query_params.get('to','') }}"></label><button>筛选</button></form>
+<p>共 {{ total }} 条 · 第 {{ page }} 页</p><ul>{% for event in events %}<li>{{ event.created_at }} · owner {{ event.actor_admin_id or '—' }} · {{ event.action }} · {{ event.object_type }} {{ event.object_id }} · {{ event.outcome }}</li>{% endfor %}</ul>
+{% if page > 1 %}<a href="{{ request.url.include_query_params(page=page-1) }}">上一页</a>{% endif %}{% if page*20 < total %}<a href="{{ request.url.include_query_params(page=page+1) }}">下一页</a>{% endif %}
+{% endblock %}

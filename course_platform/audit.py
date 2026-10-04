@@ -28,6 +28,8 @@ class AuditEvent:
 # No arbitrary titles, notes, credentials, hashes, HTML or request objects.
 # Each new action must explicitly declare the metadata its consumer needs.
 ACTION_FIELDS = {
+    "learning.access": {"error_code"},
+    "progress.update": {"error_code"},
     "auth.initialize": {"error_code"},
     "security.rate_limit": {"error_code"},
     "security.csrf": {"error_code"},

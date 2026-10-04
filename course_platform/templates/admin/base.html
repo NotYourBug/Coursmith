@@ -19,6 +19,7 @@
     {% endif %}
   </header>
   <main id="main">
+    {% if authenticated and request.app.state.order_service is defined %}<a href="/admin/audit">审计查询</a>{% endif %}
     {% if error %}<div role="alert" class="error"><p>{{ error.message }}</p><p>关联 ID：{{ request_id }}</p></div>{% endif %}
     {% block content %}
     <h1>管理后台</h1><p>已登录 owner 账号，可通过后台导航管理已提供的功能。</p>

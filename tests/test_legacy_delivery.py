@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from test_migrations import populated_v2  # noqa: F401
 
-from course_platform.access import AccessService
+from frozen_original_access import AccessService
 from course_platform.admin.auth import AdminService
 from course_platform.content import CourseManifest
 from course_platform.database import (backup_database, check_database, connect,
@@ -31,7 +31,7 @@ def rows(path, sql, args=()):
 def original(tmp_path, fixture_package, clock, monkeypatch):
     # Real old producer, with only its clock controlled. Dropping conversion
     # or combining sessions must break independent history/progress assertions.
-    monkeypatch.setattr("course_platform.access.utc_now", clock.now)
+    monkeypatch.setattr("frozen_original_access.utc_now", clock.now)
     path = tmp_path / "original.db"
     initialize_database(path)
     manifest = CourseManifest.model_validate_json((fixture_package / "manifest.json").read_bytes())

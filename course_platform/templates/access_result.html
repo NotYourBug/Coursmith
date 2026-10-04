@@ -1,0 +1,2 @@
+{% extends "base.html" %}
+{% block content %}<section class="narrow-form"><h1>访问已就绪</h1>{% if raw_key %}<p>学习凭证仅在本次成功兑换显示，请自行妥善保存。之后恢复设备须重新输入。</p><code>{{ raw_key }}</code><p>学习截止：{{ deadline or '无固定到期日' }}。仅交付购买时约定版本，不承诺自动升级。</p>{% endif %}<p><a class="button" href="/learn/{{ slug }}">进入课程与下载</a></p><a href="/access/restore">恢复其他设备</a></section>{% endblock %}

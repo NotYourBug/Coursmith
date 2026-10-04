@@ -8,12 +8,13 @@ import hashlib
 import json
 import secrets
 import socket
+from contextlib import closing
 from pathlib import Path
 
 from .access import AccessService
 from .admin.auth import AdminService
 from .content import load_course_package, publish_course, validate_course_package
-from .database import check_database, migrate_database, sync_course
+from .database import LATEST_SCHEMA_VERSION, check_database, migrate_database, open_readonly, sync_course, transaction
 from .domain import Actor, BusinessError
 from .settings import load_settings
 
@@ -96,25 +97,46 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if args.command == "publish":
-        package = load_course_package(args.course_dir)
-        target = publish_course(args.course_dir, settings.content_root, package.manifest)
-        sync_course(package.manifest, target, settings.database_path)
-        print(target)
-        return 0
+        from .operations.products import ProductService
+        try:
+            package = load_course_package(args.course_dir)
+            if settings.database_path.exists():
+                if check_database(settings.database_path)["version"] != LATEST_SCHEMA_VERSION:
+                    raise BusinessError("offline_migration_required", "Offline backup migration is required.", 409)
+                with closing(open_readonly(settings.database_path)) as connection:
+                    if connection.execute("SELECT 1 FROM courses WHERE course_id=?", (package.manifest.course_id,)).fetchone():
+                        raise BusinessError("release_exists", "M1 forbids replacing an existing course ID.", 409)
+            else:
+                migrate_database(settings.database_path)
+            target = publish_course(args.course_dir, settings.content_root, package.manifest)
+            sync_course(package.manifest, target, settings.database_path)
+            with transaction(settings.database_path, immediate=True) as connection:
+                ProductService(settings.database_path).ensure_draft_in_tx(connection, package.manifest.course_id)
+            print(target)
+            return 0
+        except (BusinessError, ValueError):
+            print(json.dumps({"error": "publish_unavailable"}))
+            return 1
 
     if args.command == "create-code":
-        package_path = settings.content_root / args.course_slug
-        package = load_course_package(package_path)
-        code = AccessService(settings.database_path, settings.session_ttl_hours).create_access_code(
-            package.manifest.course_id
-        )
-        print(code)
-        return 0
+        try:
+            actor = authenticate_owner(AdminService(settings.database_path))
+            with closing(open_readonly(settings.database_path)) as connection:
+                row = connection.execute("SELECT course_id FROM courses WHERE slug=?", (args.course_slug,)).fetchone()
+            if not row:
+                raise BusinessError("course_missing", "Course is unavailable.", 404)
+            code = AccessService(settings.database_path, settings.session_ttl_hours).create_access_code(row[0], actor=actor)
+            print(code)
+            return 0
+        except BusinessError as error:
+            print(json.dumps({"error": error.code}))
+            return 1
 
     if args.command == "serve":
         import uvicorn
 
-        uvicorn.run("course_platform.app:app", host=args.host, port=args.port, reload=False)
+        uvicorn.run("course_platform.app:create_app", host=args.host, port=args.port, reload=False,
+                    factory=True, proxy_headers=False)
         return 0
     return 2
 

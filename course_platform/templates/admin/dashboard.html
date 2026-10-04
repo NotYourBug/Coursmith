@@ -1,0 +1,8 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<h1>运营总览</h1>
+<dl><dt>草稿商品</dt><dd>{{ counts.drafts }}</dd><dt>待核验历史权益</dt><dd>{{ counts.verification }}</dd><dt>待核验历史码</dt><dd>{{ counts.codes }}</dd><dt>待交付订单</dt><dd>{{ counts.delivery }}</dd><dt>已激活订单</dt><dd>{{ counts.activated }}</dd></dl>
+<p>课程正文编辑、站内支付与公开生成功能不在当前阶段提供。</p>
+<h2>近期审计</h2><a href="/admin/audit">查询审计记录</a>
+<ul>{% for event in events %}<li>{{ event.created_at }} · owner {{ event.actor_admin_id or '—' }} · {{ event.action }} · {{ event.object_type }} {{ event.object_id }} · {{ event.outcome }}</li>{% endfor %}</ul>
+{% endblock %}

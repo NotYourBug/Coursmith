@@ -1,5 +1,7 @@
 import shutil
 import sqlite3
+import zipfile
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -302,4 +304,36 @@ def code_client(code_app):
     from fastapi.testclient import TestClient
 
     with TestClient(code_app, client=("198.51.100.7", 50000), follow_redirects=False) as client:
+        yield client
+
+
+@pytest.fixture
+def delivery_content(fixture_package):
+    manifest = json.loads((fixture_package / "manifest.json").read_text(encoding="utf8"))
+    manifest["chapter_count"] = 2
+    manifest["chapters"].append(dict(number=2, title="第二章", path="chapters/02.html", free_preview=False))
+    (fixture_package / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf8")
+    (fixture_package / "assets").mkdir(exist_ok=True)
+    (fixture_package / "assets" / "free.png").write_bytes(b"free image")
+    (fixture_package / "assets" / "paid.png").write_bytes(b"paid image")
+    (fixture_package / "assets" / "theme.css").write_text('body { background: url("free.png"); }', encoding="utf8")
+    (fixture_package / "chapters" / "01.html").write_text('<!doctype html><html><head><title>第一章</title><link rel="stylesheet" href="../assets/theme.css"></head><body class="learning-content" style="background-image:url(../assets/free.png)"><h1>第一章</h1><img src="../assets/free.png"></body></html>', encoding="utf8")
+    (fixture_package / "chapters" / "02.html").write_text('<!doctype html><html><head><title>第二章</title></head><body><h1>第二章</h1><img src="../assets/paid.png"></body></html>', encoding="utf8")
+    (fixture_package / "downloads").mkdir(exist_ok=True)
+    (fixture_package / "downloads" / "course.pdf").write_bytes(b"%PDF-1.4\nfixture")
+    with zipfile.ZipFile(fixture_package / "downloads" / "course.zip", "w") as archive:
+        for path in fixture_package.rglob("*"):
+            if path.is_file() and path.name != "course.zip":
+                archive.write(path, path.relative_to(fixture_package).as_posix())
+    return fixture_package
+
+
+@pytest.fixture
+def delivery_client(db_path, delivery_content, active_product, clock, monkeypatch):
+    from fastapi.testclient import TestClient
+    from course_platform.app import create_app
+    fixture_package = delivery_content
+    monkeypatch.setattr("course_platform.app.utc_now", clock.now)
+    app = create_app(Settings("", "", fixture_package.parent, db_path, 72, "test", "http://testserver"))
+    with TestClient(app, client=("198.51.100.8", 50001), follow_redirects=False) as client:
         yield client
