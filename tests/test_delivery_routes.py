@@ -1,5 +1,8 @@
 """Actual factory consumers use real domain producers and browser boundaries."""
 import re
+import json
+from html.parser import HTMLParser
+from xml.etree import ElementTree
 from datetime import timedelta
 from contextlib import closing
 
@@ -397,3 +400,104 @@ def test_audit_filters_paginate_twenty_minimal_events(delivery_client, active_pr
     assert second.text.count(" · product.update · ") == 1
     assert "共 21 条" in first.text and "action=product.update" in first.text
     assert "changes_json" not in first.text and "request_digest" not in first.text
+
+
+@pytest.fixture
+def nested_delivery_client(db_path, delivery_content, clock, monkeypatch, request):
+    # Prepare legal bytes BEFORE any release/product/code is imported or issued.
+    manifest_path = delivery_content / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    nested = delivery_content / "lessons" / "unit"
+    nested.mkdir(parents=True)
+    for chapter in manifest["chapters"]:
+        filename = chapter["path"].split("/")[-1]
+        chapter["path"] = "lessons/unit/" + filename
+        image = "free" if chapter["free_preview"] else "paid"
+        stylesheet = "theme" if chapter["free_preview"] else "paid"
+        html = f'''<!doctype html><html><head><title>Chapter</title><style>
+@import/**/"../../assets/{stylesheet}.css";
+.image {{ background-image: image-set("../../assets/{image}.png" 1x); }}
+.webkit {{ background-image: -webkit-image-set("../../assets/{image}.png" 1x); }}
+.caption::after {{ content: "../../assets/not-a-resource.png"; }}
+</style></head><body><div style='background-image:image-set("../../assets/{image}.png" 1x)'></div>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path id="first" d="M0 0 L1 1" cursor='image-set("../../assets/{image}.png" 1x),auto'/><path id="second" d="M2 2 L3 3"/></svg>
+</body></html>'''
+        (nested / filename).write_text(html, encoding="utf8")
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf8")
+    (delivery_content / "assets" / "paid.css").write_text('body { background:url("paid.png"); }', encoding="utf8")
+    request.getfixturevalue("active_product")  # Real owner/product readiness, not test flags.
+    monkeypatch.setattr("course_platform.app.utc_now", clock.now)
+    app = create_app(Settings("", "", delivery_content.parent, db_path, 72, "test", "http://testserver"))
+    with TestClient(app, client=("198.51.100.8", 50001), follow_redirects=False) as client:
+        yield client
+
+
+@pytest.mark.parametrize("prefix", ["/learn/fixture-course", "/courses/fixture-course"])
+@pytest.mark.parametrize("alias", ["chapters/1", "chapters/01.html", "lessons/unit/01.html"])
+def test_nested_css_string_resources_use_declared_base_and_membership(nested_delivery_client, actor, prefix, alias):
+    import tinycss2
+    client = nested_delivery_client
+    assert client.get("/learn/fixture-course/chapters/1").status_code == 403
+    raw = client.app.state.access_service.create_access_code("fixture-course", actor=actor)
+    assert redeem(client, raw).status_code == 200
+    response = client.get(prefix + "/" + alias)
+    assert response.status_code == 200
+    css = re.search(r"<style>(.*?)</style>", response.text, re.S).group(1)
+    rules = tinycss2.parse_stylesheet(css, skip_whitespace=True, skip_comments=True)
+    import_rule = next(rule for rule in rules if rule.type == "at-rule" and rule.lower_at_keyword == "import")
+    imported = next(token.value for token in import_rule.prelude if token.type == "string")
+    assert imported == prefix + "/assets/theme.css"
+    for name in ("image-set", "-webkit-image-set"):
+        assert f'{name}("{prefix}/assets/free.png" 1x)' in css
+    assert 'content: "../../assets/not-a-resource.png"' in css  # Not every CSS string is a URL.
+
+    class Styles(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.values = []
+
+        def handle_starttag(self, tag, attrs):
+            self.values.extend(value for name, value in attrs if name == "style")
+
+    styles = Styles()
+    styles.feed(response.text)
+    assert f'image-set("{prefix}/assets/free.png" 1x)' in styles.values[0]
+    assert client.get(imported).status_code == 200
+    assert client.get(prefix + "/assets/free.png").content == b"free image"
+    assert client.get("/courses/fixture-course/assets/paid.css").status_code == 404
+    assert client.get("/courses/fixture-course/assets/paid.png").status_code == 404
+    for paid_alias in ("chapters/2", "chapters/02.html", "lessons/unit/02.html"):
+        assert client.get("/courses/fixture-course/" + paid_alias).status_code == 403
+        assert client.get("/learn/fixture-course/" + paid_alias).status_code == 200
+    assert client.get("/learn/fixture-course/assets/paid.css").status_code == 200
+    assert client.get("/learn/fixture-course/assets/paid.png").content == b"paid image"
+    client.cookies.clear()
+    assert client.get("/learn/fixture-course/assets/free.png").status_code == 403
+    assert client.get("/learn/fixture-course/assets/theme.css").status_code == 403
+
+
+@pytest.mark.parametrize("prefix", ["/learn/fixture-course", "/courses/fixture-course"])
+def test_validated_selfclosing_svg_paths_remain_siblings(nested_delivery_client, actor, prefix):
+    client = nested_delivery_client
+    raw = client.app.state.access_service.create_access_code("fixture-course", actor=actor)
+    assert redeem(client, raw).status_code == 200
+    response = client.get(prefix + "/chapters/1")
+    assert response.status_code == 200
+    svg = re.search(r"<svg\b.*?</svg>", response.text, re.S).group()
+    try:
+        element = ElementTree.fromstring(svg)
+    except ElementTree.ParseError:
+        pytest.fail("Validated self-closing SVG siblings were serialized as unclosed elements")
+    assert [child.tag for child in element] == ["{http://www.w3.org/2000/svg}path"] * 2
+    assert [child.attrib["id"] for child in element] == ["first", "second"]
+    assert [child.attrib["d"] for child in element] == ["M0 0 L1 1", "M2 2 L3 3"]
+    assert element[0].attrib["cursor"] == f'image-set("{prefix}/assets/free.png" 1x),auto'
+    assert all(len(child) == 0 for child in element)
+
+
+def test_nested_image_set_strings_resolve_from_declared_chapter(nested_delivery_client):
+    response = nested_delivery_client.get("/courses/fixture-course/chapters/1")
+    assert response.status_code == 200
+    css = re.search(r"<style>(.*?)</style>", response.text, re.S).group(1)
+    assert 'image-set("/courses/fixture-course/assets/free.png" 1x)' in css
+    assert '-webkit-image-set("/courses/fixture-course/assets/free.png" 1x)' in css

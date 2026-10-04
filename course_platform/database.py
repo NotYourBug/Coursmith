@@ -289,7 +289,7 @@ def sync_course(manifest: CourseManifest, content_path: Path, database_path: Pat
             stored = [tuple(row) for row in connection.execute(
                 "SELECT chapter_number, title, path, free_preview FROM chapters WHERE course_id=? ORDER BY chapter_number",
                 (manifest.course_id,))]
-            if saved != values or stored != chapters or (
+            if saved != values or stored != sorted(chapters, key=lambda chapter: chapter[0]) or (
                 "package_hash" in existing.keys() and existing["package_hash"] != inspection.fingerprint):
                 raise BusinessError("release_exists", "M1 forbids changing an existing release; retain its original content.", 409)
             return

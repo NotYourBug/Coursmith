@@ -82,7 +82,15 @@ def chapter_for(manifest, value):
 def css_urls(text, base):
     tokens = tinycss2.parse_component_value_list(text)
     def rewrite(items):
+        import_pending = False
         for token in items:
+            if token.type in ("whitespace", "comment"):
+                continue
+            if token.type == "at-keyword" and token.lower_value == "import":
+                import_pending = True
+                continue
+            if import_pending and token.type == "string":
+                token.representation = json.dumps(urljoin(base, token.value), ensure_ascii=False)
             if token.type == "url":
                 token.representation = "url(" + json.dumps(urljoin(base, token.value)) + ")"
             elif token.type == "function" and token.lower_name == "url":
@@ -92,7 +100,12 @@ def css_urls(text, base):
             elif hasattr(token, "content"):
                 rewrite(token.content)
             elif hasattr(token, "arguments"):
+                if token.lower_name in ("image-set", "-webkit-image-set"):
+                    for argument in token.arguments:
+                        if argument.type == "string":
+                            argument.representation = json.dumps(urljoin(base, argument.value), ensure_ascii=False)
                 rewrite(token.arguments)
+            import_pending = False
     rewrite(tokens)
     return tinycss2.serialize(tokens)
 
@@ -109,17 +122,18 @@ class ChapterLayout(HTMLParser):
         if self.part:
             getattr(self, self.part).append(text)
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag, attrs, *, self_closing=False):
         if tag == "head":
             self.part = "head"
             return
-        self.style = tag == "style" or self.style
+        self.style = (tag == "style" and not self_closing) or self.style
         rendered = []
         for name, value in attrs:
             if value is None:
                 rendered.append(name)
                 continue
-            if name == "style":
+            if name in ("style", "fill", "stroke", "filter", "clip-path", "mask", "marker",
+                        "marker-start", "marker-mid", "marker-end", "cursor"):
                 value = css_urls(value, self.base)
             elif name in ("srcset", "imagesrcset"):
                 value = ", ".join(" ".join([urljoin(self.base, bits[0]), *bits[1:]]) for bits in
@@ -133,10 +147,10 @@ class ChapterLayout(HTMLParser):
             self.part = "body"
             self.body_attributes = " ".join(rendered)
         else:
-            self.emit("<" + tag + (" " + " ".join(rendered) if rendered else "") + ">")
+            self.emit("<" + tag + (" " + " ".join(rendered) if rendered else "") + ("/>" if self_closing else ">"))
 
     def handle_startendtag(self, tag, attrs):
-        self.handle_starttag(tag, attrs)
+        self.handle_starttag(tag, attrs, self_closing=True)
 
     def handle_endtag(self, tag):
         if tag in ("head", "body"):
