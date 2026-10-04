@@ -47,6 +47,14 @@ def prepare_product(page, site, *, online=True, pdf=False, zip=False):
     form.locator('[name="access_mode"]').select_option("days")
     for name, value in dict(online=online, pdf=pdf, zip=zip).items():
         form.locator(f'[name="{name}"]').set_checked(value)
+    # Native server validation must recover the owner's safe editing fields.
+    form.locator('[name="channels"]').fill("店铺|http://shop.example/course")
+    form.get_by_role("button", name="保存商品").click()
+    expect(page.locator('[data-field-error="channels"]')).to_be_visible()
+    form = page.locator('form[action="/admin/products/1"]')
+    expect(form.locator('[name="title"]')).to_have_value("真实验收课程")
+    expect(form.locator('[name="support_text"]')).to_have_value("联系原购买店铺")
+    form.locator('[name="channels"]').fill("店铺|https://shop.example/course")
     form.get_by_role("button", name="保存商品").click()
     # Actual readiness checks inspect the fixture package; the operator affirms
     # review in the UI, with live public preview exercised immediately below.
@@ -185,6 +193,8 @@ def test_owner_and_buyer_complete_delivery_without_daily_cli(real_browser, live_
         with transaction(site.db) as c:
             c.execute("UPDATE sessions SET expires_at='2026-10-01T00:00:00+00:00' WHERE session_hash=?", (hashlib.sha256(session.encode()).hexdigest(),))
         assert second.goto(site.url + "/learn/fixture-course/chapters/1").status == 403
+        # This same active device must be discriminating across the reset.
+        assert fourth.goto(site.url + "/learn/fixture-course/chapters/1").status == 200
         owner.goto(site.url + "/admin/entitlements/1")
         form = owner.locator('form[action$="/reset-credential"]')
         form.locator('[name="reason"]').fill("店铺核验实际订单及原购买者")
@@ -192,6 +202,7 @@ def test_owner_and_buyer_complete_delivery_without_daily_cli(real_browser, live_
         form.get_by_role("button", name="确认重置凭证").click()
         new_key = owner.locator("code").inner_text()
         assert new_key != key
+        assert fourth.goto(site.url + "/learn/fixture-course/chapters/1").status == 403
         assert second.goto(site.url + "/learn/fixture-course").status == 403
         restore_ui(second, site, key, success=False)
         expect(second.get_by_role("alert")).to_be_visible()

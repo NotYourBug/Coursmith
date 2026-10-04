@@ -189,6 +189,11 @@ assert redeemed.status_code==200
 old_key=re.search(r'LK-[A-Za-z0-9_-]{43}',redeemed.text).group()
 assert buyer.get('/learn/fixture-course/chapters/intro.html').status_code==200
 assert buyer.get('/learn/fixture-course/lessons/unit/intro.html').status_code==200
+token=buyer.cookies.get('course_csrf_fixture-course')
+assert buyer.post('/api/progress',json=dict(course_slug='fixture-course',chapter_number=1,completed=False),
+    headers={'Origin':'https://testserver','X-CSRF-Token':token}).status_code==204
+assert buyer.post('/api/progress',json=dict(course_slug='fixture-course',chapter_number=1,completed=True,csrf_token=token),
+    headers={'Origin':'https://testserver'}).status_code==403
 assert buyer.post('/learn/fixture-course/chapters/1/progress',data=dict(completed='true',csrf_token=buyer.cookies.get('course_csrf_fixture-course')),
     headers={'Origin':'https://testserver'}).status_code==303
 with closing(open_readonly(db)) as c:

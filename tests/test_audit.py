@@ -29,7 +29,8 @@ def test_business_and_success_audit_roll_back_together(db_path):
         assert connection.execute("SELECT COUNT(*) FROM admin_events").fetchone()[0] == 0
 
 
-def test_success_audit_commits_with_business_write(db_path, clock):
+def test_success_audit_commits_with_business_write(db_path, clock, monkeypatch):
+    monkeypatch.setattr("course_platform.audit.utc_now", clock.now)
     with transaction(db_path) as connection:
         connection.execute("INSERT INTO categories (slug, name) VALUES ('ai', 'AI')")
         append_event(connection, event(action="category.create", outcome="success", reason="created", changes={"revision": 1}))
@@ -38,10 +39,14 @@ def test_success_audit_commits_with_business_write(db_path, clock):
         assert row["outcome"] == "success"
         assert row["request_id"] == "request-1"
         assert json.loads(row["changes_json"]) == {"revision": 1}
+        assert row["created_at"] == "2026-10-02T00:00:00+00:00"
         assert connection.execute("SELECT COUNT(*) FROM categories").fetchone()[0] == 1
     assert clock.now().isoformat() == "2026-10-02T00:00:00+00:00"
     clock.advance(minutes=10)
     assert clock.now().isoformat() == "2026-10-02T00:10:00+00:00"
+    record_denial(db_path, event(request_id="later"))
+    with transaction(db_path) as connection:
+        assert connection.execute("SELECT created_at FROM admin_events WHERE request_id='later'").fetchone()[0] == "2026-10-02T00:10:00+00:00"
 
 
 def test_denial_survives_failed_business_transaction(db_path):

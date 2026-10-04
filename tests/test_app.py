@@ -44,7 +44,7 @@ def test_authorized_user_can_open_chapter_and_save_progress(client, access_code)
     page = client.get("/learn/fixture-course/chapters/1")
     saved = client.post("/api/progress", json=dict(course_slug="fixture-course", chapter_number=1,
         completed=True, csrf_token=client.cookies.get("course_csrf_fixture-course")),
-        headers={"Origin": "http://testserver"})
+        headers={"Origin": "http://testserver", "X-CSRF-Token": client.cookies.get("course_csrf_fixture-course")})
     assert page.status_code == 200 and saved.status_code == 204
 
 
@@ -60,7 +60,7 @@ def test_progress_requires_a_real_json_boolean(client, access_code):
     redeem(client, access_code)
     response = client.post("/api/progress", json=dict(course_slug="fixture-course", chapter_number=1,
         completed="false", csrf_token=client.cookies.get("course_csrf_fixture-course")),
-        headers={"Origin": "http://testserver"})
+        headers={"Origin": "http://testserver", "X-CSRF-Token": client.cookies.get("course_csrf_fixture-course")})
     assert response.status_code == 400
 
 

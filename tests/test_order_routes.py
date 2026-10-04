@@ -38,6 +38,24 @@ def fields(**changes):
         "note": "核验已付款", "confirm": "on", "revision": "1", "idempotency_key": "http-record", **changes}
 
 
+@pytest.mark.parametrize("field,value", [("paid_cents", "1.2"), ("paid_at", "2026-10-02T00:00:00"),
+    ("confirm", ""), ("product_id", "missing"), ("paid_at", "2026-10-03T00:00:00+00:00")])
+def test_invalid_order_recovers_safe_fields(order_client, active_product, db_path, field, value):
+    from course_platform.database import transaction
+    login(order_client)
+    response = post(order_client, "/admin/orders/new", fields(**{field: value, "shop_id": "<shop> safe",
+        "note": "已核验付款" if value == "2026-10-03T00:00:00+00:00" else "CS-never-echo",
+        "credential": "never-echo-extra"}))
+    assert response.status_code == 400
+    assert 'action="/admin/orders/new"' in response.text
+    assert 'value="&lt;shop&gt; safe"' in response.text
+    assert f'data-field-error="{field}"' in response.text
+    assert 'CS-never-echo' not in response.text and 'never-echo-extra' not in response.text
+    assert 'value="http-record"' in response.text
+    with transaction(db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM orders").fetchone()[0] == 0
+
+
 def test_owner_order_record_issue_delivery_and_refund(order_client, active_product):
     for path in ("/admin/orders", "/admin/orders/new", "/admin/orders/1"):
         assert order_client.get(path).status_code == 303

@@ -4,7 +4,8 @@
 <h1>发码批次</h1>
 <p><a href="/admin/code-batches/new">新建批次</a> · 共 {{ total }} 批</p>
 <p>明文仅首次成功时显示。丢失不可找回，可作废未使用码后补发。</p>
-<div class="table-wrap"><table><thead><tr><th>批次</th><th>商品编号</th><th>数量</th><th>用途</th><th>创建时间</th></tr></thead>
-<tbody>{% for batch in batches %}<tr><td><a href="/admin/code-batches/{{ batch.id }}">{{ batch.id }}</a></td><td>{{ batch.product_id }}</td><td>{{ batch.quantity }}</td><td>{{ batch.purpose }}</td><td>{{ display_time(batch.created_at) }}</td></tr>{% endfor %}</tbody></table></div>
+<p>数量为本批原始发码数。已兑换优先于作废；仅未兑换、未作废且已到领取截止的码计为过期。替代码属于新批次。</p>
+<div class="table-wrap"><table><thead><tr><th>批次</th><th>商品</th><th>创建者</th><th>数量</th><th>未使用</th><th>已兑换</th><th>已作废</th><th>已过期</th><th>用途</th><th>创建时间</th></tr></thead>
+<tbody>{% for batch in batches %}<tr><td><a href="/admin/code-batches/{{ batch.id }}">{{ batch.id }}</a></td><td>{{ batch.product_title }} · {{ batch.product_id }}</td><td>{{ batch.creator }}</td><td>{{ batch.quantity }}</td><td>{{ batch.unused }}</td><td>{{ batch.redeemed }}</td><td>{{ batch.voided }}</td><td>{{ batch.expired }}</td><td>{{ batch.purpose }}</td><td>{{ display_time(batch.created_at) }}</td></tr>{% endfor %}</tbody></table></div>
 {% if previous %}<a href="{{ previous }}">上一页</a>{% endif %} {% if next_page %}<a href="{{ next_page }}">下一页</a>{% endif %}
 {% endblock %}

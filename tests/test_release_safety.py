@@ -187,9 +187,42 @@ POST_ROUTES = [
 ]
 
 
+def registered_posts(app):
+    from fastapi import routing
+    from starlette.routing import Mount
+    def inventory(routes, prefix=""):
+        contexts = getattr(routing, "iter_route_contexts", lambda entries: entries)(routes)
+        result = set()
+        for context in contexts:
+            route = getattr(context, "original_route", context)
+            path = getattr(context, "path_format", getattr(route, "path_format", getattr(route, "path", "")))
+            if "POST" in (getattr(context, "methods", getattr(route, "methods", set())) or set()):
+                result.add(prefix + path)
+            if isinstance(route, Mount) and hasattr(route, "routes"):
+                result.update(inventory(route.routes, prefix + route.path))
+        return result
+    return inventory(app.routes)
+
+
+def test_post_inventory_sees_hidden_included_and_mounted_routes():
+    from fastapi import APIRouter, FastAPI
+    app, child = FastAPI(), FastAPI()
+    inner, outer = APIRouter(), APIRouter()
+    @inner.post("/hidden", include_in_schema=False)
+    def hidden():
+        return {}
+    @child.post("/hidden-mounted", include_in_schema=False)
+    def hidden_mounted():
+        return {}
+    outer.include_router(inner, prefix="/nested")
+    app.include_router(outer, prefix="/included")
+    app.mount("/mounted", child)
+    assert registered_posts(app) == {"/included/nested/hidden", "/mounted/hidden-mounted"}
+
+
 def test_every_mutating_route_rejects_missing_csrf(ready_site):
     site = ready_site
-    registered = {path for path, methods in create_app().openapi()["paths"].items() if "post" in methods}
+    registered = registered_posts(create_app())
     assert registered == set(POST_ROUTES), "New POST endpoints need explicit release acceptance"
     with httpx.Client(base_url=site.url, verify=False, trust_env=False, timeout=10) as owner, httpx.Client(base_url=site.url, verify=False, trust_env=False, timeout=10) as buyer, httpx.Client(base_url=site.url, verify=False, trust_env=False, timeout=10) as anonymous:
         code, key = sale_receipt(owner, buyer, site)
@@ -343,7 +376,15 @@ def test_secrets_are_absent_from_persistence_logs_and_artifacts(ready_site):
             dump = "\n".join(c.iterdump())
             audit = str([tuple(row) for row in c.execute("SELECT * FROM admin_events")])
             history = str([tuple(row) for row in c.execute("SELECT * FROM operation_requests")])
-        files = [path.read_bytes() for path in site.content.parent.rglob("*") if path.is_file()]
+        copy = site.content.parent / "acceptance-auth.backup"
+        backup_database(site.db, copy)
+        # Only the known authentication DB and its actual matched backup carry
+        # permitted hashes, including SQLite sidecars. Other artifacts are
+        # scanned even if named .db or containing an unrelated SQLite header.
+        databases = {str(path.resolve()) + suffix for path in (site.db, copy) for suffix in ("", "-wal", "-shm")}
+        payloads = [(path, path.read_bytes()) for path in site.content.parent.rglob("*") if path.is_file()]
+        files = [value for _, value in payloads]
+        non_db_files = [value for path, value in payloads if str(path.resolve()) not in databases]
         for secret in secrets:
             assert secret not in dump
             assert secret.encode() not in site.db.read_bytes()
@@ -352,6 +393,10 @@ def test_secrets_are_absent_from_persistence_logs_and_artifacts(ready_site):
             assert all(secret not in page for page in persistent_pages)
             digest = hashlib.sha256(secret.encode()).hexdigest()
             assert digest not in audit + history + "".join(persistent_pages)
+            assert digest not in site.log.read_text(encoding="utf8")
+            assert all(digest.encode() not in value for value in non_db_files)
+        with closing(open_readonly(copy)) as c:
+            assert c.execute("SELECT code_hash FROM access_codes LIMIT 1").fetchone()[0] == hashlib.sha256(code.encode()).hexdigest()
         assert "release-private-order" not in audit + history + site.log.read_text(encoding="utf8")
         assert "release-private-order" not in "".join(persistent_pages)
 
@@ -377,7 +422,7 @@ def test_root_nested_aliases_and_both_progress_routes_fail_closed(ready_site, ga
             assert buyer.get("/learn/fixture-course/" + path).status_code == 403
         token = buyer.cookies.get("course_csrf_fixture-course")
         assert buyer.post("/api/progress", json=dict(course_slug="fixture-course", chapter_number=1, completed=True, csrf_token=token),
-                           headers={"Origin": site.origin}).status_code == 403
+                           headers={"Origin": site.origin, "X-CSRF-Token": token}).status_code == 403
         assert buyer.post("/learn/fixture-course/chapters/1/progress", data=dict(completed="true", csrf_token=token),
                            headers={"Origin": site.origin}).status_code == 403
         assert snapshot(site.db) == before
@@ -446,6 +491,22 @@ def test_matched_copied_database_and_content_restore_reads_relocated_bytes(ready
         if table not in ("courses", "sessions"):
             assert final[table] == before[table]
     print("Matched latest5 backup/content restore: FK, identity/hash, promises/deadlines/progress preserved; relocated bytes read; mismatched bytes denied")
+    preserved = snapshot(backup, ("orders", "entitlements", "recovery_credentials", "entitlement_progress"))
+    with TestClient(app, client=("198.51.100.7", 50000), follow_redirects=False) as owner:
+        login(owner)
+        values = dict(product_id="1", count="1", purpose="gift", activation_days="30", idempotency_key="relocated-issue")
+        denied = post(owner, "/admin/code-batches/new", values)
+        assert denied.status_code == 409
+        assert "Sales approval is missing or stale" in denied.text
+        assert len(snapshot(backup, ("code_batches",))["code_batches"]) == len(before["code_batches"])
+        product = ProductService(backup).get_product(1)
+        checks = dict(revision=str(product.revision), **{key: "on" for key in ("quality", "sources", "ai", "mobile", "downloads")})
+        assert post(owner, "/admin/products/1/activate", checks).status_code == 303
+        issued = post(owner, "/admin/code-batches/new", values)
+        assert issued.status_code == 200 and re.search(r"CS-[A-Za-z0-9_-]{32}", issued.text)
+    assert snapshot(backup, tuple(preserved)) == preserved
+    assert snapshot(site.db, all_tables) == before
+    print("Relocation new issuance denied until actual owner checklist reapproval; then issuance succeeds without changing purchased promises/proof/progress")
 
 
 def test_http_reset_fault_replay_and_competing_restores(delivery_client, actor):

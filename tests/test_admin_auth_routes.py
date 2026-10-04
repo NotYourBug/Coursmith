@@ -21,6 +21,23 @@ from course_platform.domain import BusinessError
 PASSWORD = "example-pass-123"
 
 
+@pytest.mark.parametrize("fault", ["origin", "csrf", "duplicate"])
+def test_login_does_not_retain_username_before_security_gates(admin_client, admin_service, fault):
+    admin_service.initialize_owner("owner", PASSWORD)
+    page = admin_client.get("/admin/login")
+    data = {"username": "unsafe-raw-name", "password": PASSWORD, "csrf_token": field(page, "csrf_token")}
+    headers = {"Origin": "http://evil.test" if fault == "origin" else "http://testserver"}
+    if fault == "csrf":
+        data["csrf_token"] = "invalid"
+    if fault == "duplicate":
+        response = admin_client.post("/admin/login", content="username=unsafe-raw-name&username=x",
+            headers={**headers, "Content-Type": "application/x-www-form-urlencoded"})
+    else:
+        response = admin_client.post("/admin/login", data=data, headers=headers)
+    assert response.status_code in (400, 403)
+    assert "unsafe-raw-name" not in response.text and PASSWORD not in response.text
+
+
 def field(response, name):
     match = re.search(r'name="' + name + r'"[^>]*value="([^"]*)"', response.text)
     assert match, response.text

@@ -10,8 +10,8 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from ...domain import BusinessError
-from ...operations.products import AccessPolicy, ProductInput, SalesChannel, SalesChecklist
-from .auth import AdminRoute, CSRF_COOKIE, _render, _revision, require_admin_post, require_owner
+from ...operations.products import AccessPolicy, ProductInput, SalesChannel, SalesChecklist, _CategoryInput
+from .auth import AdminRoute, CSRF_COOKIE, _render, _revision, require_admin_post, require_owner, safe_form_values, field_error
 
 
 # These actions and object kinds are fixed by the registered route, never by
@@ -57,44 +57,73 @@ class ProductRoute(AdminRoute):
 router = APIRouter(prefix="/admin", route_class=ProductRoute)
 
 
-def _integer(value, *, signed=False):
+def _integer(value, *, signed=False, field="category_id"):
     pattern = r"-?[0-9]{1,18}" if signed else r"[0-9]{1,18}"
     if not re.fullmatch(pattern, value):
-        raise BusinessError("invalid_product", "Invalid numeric form field.", 400)
+        raise field_error(field, "请输入有效整数。")
     return int(value)
 
 
 def _checkbox(form, name):
     value = form.get(name, "")
     if value not in ("", "on"):
-        raise BusinessError("invalid_product", "Invalid checkbox field.", 400)
+        raise field_error(name, "请重新选择此项。")
     return value == "on"
 
 
 def _product_input(form):
+    field = "access_mode"
     try:
         policy = None
         if form.get("access_mode"):
             policy = AccessPolicy(access_mode=form["access_mode"],
-                access_days=_integer(form["access_days"]) if form.get("access_days") else None,
+                access_days=_integer(form["access_days"], field="access_days") if form.get("access_days") else None,
                 online=_checkbox(form, "online"), pdf=_checkbox(form, "pdf"), zip=_checkbox(form, "zip"),
                 update_policy=form.get("update_policy", "current_version"))
         channels = []
+        field = "channels"
         for line in form.get("channels", "").splitlines():
             if not line.strip():
                 continue
             name, separator, url = line.partition("|")
             if not separator:
-                raise BusinessError("invalid_product", "Use one channel per line: name|HTTPS URL.", 400)
+                raise field_error("channels", "每行填写名称|HTTPS 链接。")
             channels.append(SalesChannel(name=name.strip(), url=url.strip()))
+        field = None
         return ProductInput(title=form.get("title", ""), category_id=_integer(form.get("category_id", "")),
             synopsis=form.get("synopsis", ""), audience=form.get("audience", ""),
             prerequisites=form.get("prerequisites", ""),
             outcomes=[line.strip() for line in form.get("outcomes", "").splitlines() if line.strip()],
             course_id=form.get("course_id") or None, ai_disclosure=form.get("ai_disclosure", ""),
             support_text=form.get("support_text", ""), channels=channels, policy=policy)
-    except ValidationError:
-        raise BusinessError("invalid_product", "Invalid sales fields, HTTPS channel or explicit learning policy.", 400) from None
+    except ValidationError as error:
+        location = error.errors(include_input=False)[0]["loc"]
+        failing = "channels" if field == "channels" else (str(location[0]) if location else "access_days")
+        if failing == "policy":
+            failing = str(location[1]) if len(location) > 1 else "access_days"
+        if field == "access_mode" and not location:
+            failing = "access_days"
+        raise field_error(failing, "请核对字段格式、HTTPS 渠道和明确的学习期限。") from None
+
+
+_PRODUCT_FIELDS = ("title", "category_id", "synopsis", "audience", "prerequisites", "outcomes", "course_id",
+    "ai_disclosure", "support_text", "channels", "access_mode", "access_days", "online", "pdf", "zip")
+
+
+def _recover_product(request, form, product_id=None):
+    values = safe_form_values(request, form, _PRODUCT_FIELDS)
+    form_revision = form.get("revision", "")
+    def recover(error):
+        session = require_owner(request)
+        service = request.app.state.product_service
+        product = service.get_product(product_id) if product_id else None
+        # Preserve the submitted revision, even if another edit won meanwhile.
+        return _page(request, session, "product_form.html", status=error.status_code, error=error,
+            product=product, data=product.data if product else None, form_values=values,
+            form_revision=form_revision, field_errors=getattr(error, "field_errors",
+                {"course_id" if error.code == "course_missing" else "category_id": error.message}),
+            categories=service.list_categories(), courses=service.list_courses())
+    request.state.form_recovery = recover
 
 
 def _page(request, session, template, **context):
@@ -131,6 +160,7 @@ def product_new(request: Request):
 @router.post("/products/new")
 async def product_create(request: Request):
     actor, form = await require_admin_post(request)
+    _recover_product(request, form)
     record = await run_in_threadpool(request.app.state.product_service.create, actor, _product_input(form))
     return RedirectResponse(f"/admin/products/{record.id}", status_code=303)
 
@@ -150,6 +180,7 @@ def product_detail(request: Request):
 async def product_update(request: Request):
     actor, form = await require_admin_post(request)
     product_id = _integer(request.path_params["product_id"])
+    _recover_product(request, form, product_id)
     await run_in_threadpool(request.app.state.product_service.update, actor, product_id, _revision(form), _product_input(form))
     return RedirectResponse(f"/admin/products/{product_id}", status_code=303)
 
@@ -193,10 +224,27 @@ def category_list(request: Request):
 async def _category_post(request, *, update=False):
     actor, form = await require_admin_post(request)
     category_id = _integer(request.path_params["category_id"]) if update else None
+    values = safe_form_values(request, form, ("slug", "name", "sort_order", "enabled"))
+    form_revision = form.get("revision", "")
+    def recover(error):
+        session = require_owner(request)
+        categories, total = request.app.state.product_service.list_category_page(page=1)
+        # Recovery edits are separate from the current paginated records.
+        return _page(request, session, "categories.html", status=error.status_code, error=error,
+            categories=categories, total=total, page=1, previous=None,
+            next_page="/admin/categories?page=2" if total > 20 else None,
+            category_recovery=values, recovery_id=category_id, form_revision=form_revision,
+            field_errors=getattr(error, "field_errors", {"slug": error.message}))
+    request.state.form_recovery = recover
+    revision = _revision(form) if category_id is not None else None
+    try:
+        data = _CategoryInput(slug=form.get("slug", ""), name=form.get("name", ""),
+            sort_order=_integer(form.get("sort_order", "0"), signed=True, field="sort_order"),
+            enabled=_checkbox(form, "enabled"))
+    except ValidationError as error:
+        raise field_error(str(error.errors(include_input=False)[0]["loc"][0]), "请核对分类字段格式。") from None
     await run_in_threadpool(request.app.state.product_service.save_category,
-        actor, category_id, _revision(form) if category_id is not None else None,
-        form.get("slug", ""), form.get("name", ""), _integer(form.get("sort_order", "0"), signed=True),
-        _checkbox(form, "enabled"))
+        actor, category_id, revision, data.slug, data.name, data.sort_order, data.enabled)
     return RedirectResponse("/admin/categories", status_code=303)
 
 

@@ -55,6 +55,29 @@ def _render(request, template, *, status=200, **context):
     )
 
 
+def safe_form_values(request, form, fields):
+    """Allowlist recovery only after the caller's complete POST security gate."""
+    secrets_to_omit = [value for name, value in form.items()
+        if name in {"password", "current_password", "new_password", "confirm_password", "csrf_token", "code", "credential"} and value]
+    secrets_to_omit.extend(value for value in request.cookies.values() if value)
+    result = {}
+    for name in fields:
+        value = form.get(name, "")
+        if (len(value) <= 16000 and not re.search(r"(?:CS|LK)-[A-Za-z0-9_-]+|(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43,}(?![A-Za-z0-9_-])", value)
+            and not any(ord(c) < 32 and c not in "\n\r\t" for c in value)
+            and not any(secret in value for secret in secrets_to_omit)):
+            result[name] = value
+        else:
+            result[name] = ""
+    return result
+
+
+def field_error(field, message, *, code="invalid_product"):
+    error = BusinessError(code, message, 400)
+    error.field_errors = {field: message}
+    return error
+
+
 def _login_page(request, *, error=None, username=""):
     challenge = request.app.state.csrf_service.issue_challenge("admin.login")
     response = _render(request, "login.html", status=error.status_code if error else 200,
@@ -104,7 +127,25 @@ class AdminRoute(APIRoute):
                 if request.method == "GET" and error.status_code == 401:
                     response = RedirectResponse("/admin/login", status_code=303)
                 else:
-                    response = _render(request, "error.html", status=error.status_code, error=error)
+                    recovery = getattr(request.state, "form_recovery", None)
+                    if error.status_code == 400 and recovery:
+                        try:
+                            response = await run_in_threadpool(recovery, error)
+                        except BusinessError as recovery_error:
+                            # Session/lookup state may change between rejection
+                            # and recovery. Fail closed without echoing fields.
+                            error = recovery_error
+                            response = _render(request, "error.html", status=error.status_code, error=error)
+                    else:
+                        # Conflicts require an explicit GET. No refreshed revision
+                        # or retry form is added to the stale POST response.
+                        reload_url = request.url.path if error.status_code == 409 else None
+                        if reload_url and reload_url.endswith(("/activate", "/pause", "/archive")):
+                            reload_url = reload_url.rsplit("/", 1)[0]
+                        if reload_url and reload_url.startswith("/admin/categories/"):
+                            reload_url = "/admin/categories"
+                        response = _render(request, "error.html", status=error.status_code, error=error,
+                                           reload_url=reload_url)
                 response.headers.update(getattr(error, "headers", {}))
             return self._private_response(request, response)
 
@@ -159,6 +200,7 @@ def login_page(request: Request):
 async def login(request: Request):
     await run_in_threadpool(request.app.state.admin_service.require_initialized)
     form = {}
+    username = ""
     try:
         check_origin(request, request.app.state.settings.site_origin)
         form = parse_unique_form(await read_limited_body(request, 65536))
@@ -166,6 +208,7 @@ async def login(request: Request):
             "admin.login", form.get("csrf_token", ""), request.cookies.get(LOGIN_CSRF_COOKIE, ""),
             audit_denial=False,
         )
+        username = safe_form_values(request, form, ("username",)).get("username", "")[:128]
         grant = await run_in_threadpool(request.app.state.admin_service.login,
             form.get("username", ""), form.get("password", ""),
             source=source_key(request, request.app.state.settings.trusted_proxy_cidrs),
@@ -173,7 +216,7 @@ async def login(request: Request):
         )
     except BusinessError as error:
         await _audit_post_denial(request, error)
-        return await run_in_threadpool(_login_page, request, error=error, username=form.get("username", "")[:128])
+        return await run_in_threadpool(_login_page, request, error=error, username=username)
     response = RedirectResponse("/admin", status_code=303)
     _cookie(request, response, ADMIN_COOKIE, grant.token, 28800)
     _cookie(request, response, CSRF_COOKIE, grant.csrf_token, 28800)
@@ -213,6 +256,8 @@ async def password_change(request: Request):
         )
     except BusinessError as error:
         await _audit_post_denial(request, error)
+        if error.status_code == 409:
+            raise error
         try:
             session = await run_in_threadpool(require_owner, request)
         except BusinessError:
@@ -221,7 +266,8 @@ async def password_change(request: Request):
             raise error
         return _render(request, "password.html", status=error.status_code, error=error,
                        authenticated=True, revision=session.revision,
-                       csrf_token=request.cookies.get(CSRF_COOKIE, ""))
+                       csrf_token=request.cookies.get(CSRF_COOKIE, ""),
+                       field_errors={"confirm_password" if error.code == "password_mismatch" else "current_password": error.message})
     response = RedirectResponse("/admin/login", status_code=303)
     _clear_session(request, response)
     return response

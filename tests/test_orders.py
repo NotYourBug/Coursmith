@@ -216,9 +216,17 @@ def test_reset_rejects_inconsistent_sale_provenance(order_service, active_produc
             connection.execute("UPDATE access_codes SET verified_reason='不同的核验记录'")
         else:
             connection.execute("UPDATE entitlements SET verified_at='2027-10-02T00:00:00+00:00'")
+            connection.execute("UPDATE access_codes SET verified_at='2027-10-02T00:00:00+00:00'")
+        before = {table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table}")]
+            for table in ("entitlements", "sessions", "recovery_credentials")}
     with pytest.raises(BusinessError) as err:
         recovery_service.reset(actor, buyer.session.entitlement_id, 1, "当前调用者核验", "bad-proof-reset")
     assert err.value.status_code == 409
+    if fault == "future_proof":
+        assert err.value.message == "Purchase verification must already have occurred."
+    with transaction(db_path) as connection:
+        assert {table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table}")]
+            for table in before} == before
     assert entitlement_service.require_session(buyer.session.session_id, buyer.session.course_id)
 
 

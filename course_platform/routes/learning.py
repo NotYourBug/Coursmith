@@ -117,6 +117,7 @@ class ChapterLayout(HTMLParser):
         self.base, self.part, self.style = base, None, False
         self.head, self.body = [], []
         self.body_attributes = ""
+        self.html_attributes = ""
 
     def emit(self, text):
         if self.part:
@@ -143,7 +144,9 @@ class ChapterLayout(HTMLParser):
             elif "url(" in value.lower() or "\\" in value:
                 value = css_urls(value, self.base)
             rendered.append(f'{name}="{escape(value, quote=True)}"')
-        if tag == "body":
+        if tag == "html":
+            self.html_attributes = " ".join(rendered)
+        elif tag == "body":
             self.part = "body"
             self.body_attributes = " ".join(rendered)
         else:
@@ -327,7 +330,11 @@ async def save_api(request: Request):
             raise ValueError
     except (ValueError, TypeError, UnicodeError):
         raise BusinessError("invalid_progress", "Invalid progress.", 400) from None
-    await run_in_threadpool(save, request, payload["course_slug"], payload["chapter_number"], payload["completed"], payload.get("csrf_token", ""))
+    tokens = request.headers.getlist("x-csrf-token")
+    if (len(tokens) != 1 or not tokens[0] or
+        ("csrf_token" in payload and payload["csrf_token"] != tokens[0])):
+        raise BusinessError("invalid_csrf", "CSRF token is invalid or expired.", 403)
+    await run_in_threadpool(save, request, payload["course_slug"], payload["chapter_number"], payload["completed"], tokens[0])
     return Response(status_code=204)
 
 

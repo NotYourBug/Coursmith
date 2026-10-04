@@ -352,9 +352,31 @@ class CodeService:
         offset = _page_offset(page)
         with closing(open_readonly(self.db_path)) as connection:
             total = connection.execute("SELECT count(*) FROM code_batches").fetchone()[0]
-            batches = connection.execute("""SELECT id, product_id, quantity, purpose, created_at
-                FROM code_batches ORDER BY id DESC LIMIT 20 OFFSET ?""", (offset,)).fetchall()
-            return [dict(row) for row in batches], total
+            batches = connection.execute("""WITH page AS (
+                SELECT b.id, b.product_id, b.quantity, b.purpose, b.created_at, b.created_by,
+                    p.title AS product_title, a.username AS creator
+                FROM code_batches b JOIN products p ON p.id=b.product_id
+                LEFT JOIN admins a ON a.id=b.created_by
+                ORDER BY b.id DESC LIMIT 20 OFFSET ?), states AS (
+                SELECT c.batch_id, CASE WHEN c.used_at IS NOT NULL THEN 'redeemed'
+                    WHEN c.voided_at IS NOT NULL THEN 'voided'
+                    WHEN c.expires_at IS NOT NULL AND c.expires_at<=? THEN 'expired'
+                    ELSE 'unused' END AS state FROM access_codes c JOIN page ON page.id=c.batch_id)
+                SELECT page.*, count(CASE WHEN states.state='unused' THEN 1 END) AS unused,
+                    count(CASE WHEN states.state='redeemed' THEN 1 END) AS redeemed,
+                    count(CASE WHEN states.state='voided' THEN 1 END) AS voided,
+                    count(CASE WHEN states.state='expired' THEN 1 END) AS expired
+                FROM page LEFT JOIN states ON states.batch_id=page.id GROUP BY page.id ORDER BY page.id DESC""",
+                (offset, to_db_time(self.clock()))).fetchall()
+            result = [dict(row) for row in batches]
+            for batch in result:
+                for key, fallback in (("product_title", f"商品 {batch['product_id']}"),
+                                      ("creator", "未记录")):
+                    value = batch[key]
+                    if not value or _CREDENTIAL.search(value) or re.search(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43,}(?![A-Za-z0-9_-])", value):
+                        batch[key] = fallback
+                del batch["created_by"]
+            return result, total
 
     def list_issue_products(self):
         with closing(open_readonly(self.db_path)) as connection:

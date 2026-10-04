@@ -85,6 +85,8 @@ with transaction(copied_db, immediate=True) as connection:
     connection.execute("UPDATE courses SET content_path=? WHERE course_id=?", (str(package), manifest.course_id))
 ```
 
+latest5 的路径迁移保留已购访问、原政策/期限/进度，但 `content_path` 也在销售检查快照中。迁移后的 active 商品在重新审批前新发码会以 `sales_approval_stale` 拒绝。由 owner 在商品详情逐项重新确认质量、来源授权、AI、移动端及所承诺下载检查并启用，再恢复新发码；先验证拒绝、再验证重新审批后的发码。不要在 relocation SQL 中改写已保存的审批或已发政策快照来绕过检查。
+
 ### pre-v5：先核对并 relocation，后做内容敏感转换
 
 v005 会读取 DB 内 courses.content_path，核对发行并派生原库缺失的 fingerprint，然后保存历史 availability/hash；故**所有工作副本路径必须在转换之前显式移入工作内容根**。原六表没有 package_hash 不代表内容丢失：以停写时封存的匹配 DB＋内容 bytes 为依据验证，不要求或手工补造旧 hash。已有 hash 必须匹配；不得修改 ownership、政策、会话到期、进度或独立历史归属。
@@ -162,6 +164,10 @@ Task12 演练复制匹配 DB＋文件，核对 FK/身份/hash/原承诺/期限/�
 原始兼容备份、匹配文件树和新副本应各自保存，不将测试日志、CSV 或首次响应凭据当作备份材料。本轮 fresh 安装使用 Python3.11.9，开发测试用 Chrome154.0.8037.93、Node24.16.0；fresh 安装的 tzdata2026.5/MarkupSafe3.0.4/websockets17.2 与开发 venv 的2026.3/3.0.3/17.1分开记录。构建隔离环境使用 setuptools84.0.0；fresh 安装环境自带 setuptools65.5.0，不混称为构建版本。
 
 ## 验收命令及环境限制
+
+进度 JSON 接口 `POST /api/progress` 必须带同源 Origin 和恰好一次非空 `X-CSRF-Token`，与课程作用域 CSRF Cookie 和当前买家会话哈希一致。JSON 字段为 course_slug（字符串）、chapter_number（严格整数）、completed（布尔值）；仅 body 的 csrf_token 不接受，若附带该字段必须与 header 相等，重复 header 或冲突值拒绝且不改变进度。无 JS 的章节表单继续使用 body CSRF token。凭证/会话/CSRF token 均不放入 URL 或日志。
+
+登录/凭证页的十分钟一次性 challenge 仅存哈希。每次签发使用既有 rowid 索引检查最旧 128 行，仅清理已消费或已到期记录；仍存活的最旧行可能延迟后续清理，过期后再次访问会继续退休。没有改变 schema5 或删除活 challenge，也没有公共 GET admission control/无限访问负载认证；无人访问时不会后台清理。监测 DB 体积及写压力，若需公开大规模运行，应另行确定 admission/定时维护政策，不直接全表删 challenge。
 
 以下是**源码仓库根目录的开发验收 venv** 命令，不能混用上面的独立安装运营目录；开发工具需要 `dev` 依赖。原始整轮完整验收命令如下，不能以默认跳过 browser/packaging 代替。审查修复轮按 controller 指定 covering cases 验证，不声称重跑未执行的全量：
 

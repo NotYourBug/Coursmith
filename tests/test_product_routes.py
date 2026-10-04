@@ -32,6 +32,81 @@ def form_data(data):
         "online": "on", "update_policy": "current_version"}
 
 
+@pytest.mark.parametrize("field,value", [("channels", "shop|http://unsafe.example"),
+    ("access_days", "3651"), ("category_id", "missing"),
+    ("course_id", "unknown-course"), ("update_policy", "future_versions")])
+def test_invalid_product_recovers_safe_fields(product_client, product_owner,
+        published_product_data, db_path, field, value):
+    # Dropping the validated form context loses the owner's unrelated edits.
+    login(product_client)
+    values = form_data(published_product_data) | {"title": '<tag> saved title', field: value,
+        "password": "never-retain-password", "support_text": "LK-do-not-retain"}
+    response = post(product_client, "/admin/products/new", values)
+    assert response.status_code == 400
+    assert 'action="/admin/products/new"' in response.text
+    assert 'value="&lt;tag&gt; saved title"' in response.text
+    assert f'data-field-error="{field}"' in response.text
+    assert 'never-retain-password' not in response.text and 'LK-do-not-retain' not in response.text
+    assert '<option value="1"' in response.text
+    if field == "course_id":
+        assert 'value="unknown-course" selected' in response.text
+    with transaction(db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM products").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("update", [False, True])
+def test_invalid_category_recovers_name(product_client, product_owner, product_service, update):
+    category = product_service.save_category(product_owner, None, None, "first", "原分类", 0, True)
+    login(product_client)
+    path = f"/admin/categories/{category}" if update else "/admin/categories"
+    response = post(product_client, path, {"revision": "1", "slug": "Bad Slug", "name": "保留名称",
+        "sort_order": "7", "enabled": "on"})
+    assert response.status_code == 400
+    assert 'value="保留名称"' in response.text
+    assert 'data-field-error="slug"' in response.text
+
+
+def test_product_recovery_cannot_render_after_owner_revocation(product_client, product_app,
+        product_owner, published_product_data, db_path, monkeypatch):
+    login(product_client)
+    service = product_app.state.product_service
+    original = service.record_denial
+    def revoke_after_denial(*args, **kwargs):
+        original(*args, **kwargs)
+        with transaction(db_path, immediate=True) as connection:
+            connection.execute("DELETE FROM admin_sessions")
+    monkeypatch.setattr(service, "record_denial", revoke_after_denial)
+    response = post(product_client, "/admin/products/new", form_data(published_product_data) |
+        {"title": "Private edited title", "channels": "not-a-channel"})
+    assert response.status_code == 401
+    assert "Private edited title" not in response.text
+    assert 'action="/admin/products/new"' not in response.text
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_product_stale_recovery_requires_explicit_reload(product_client, product_owner,
+        active_product, product_service):
+    login(product_client)
+    response = post(product_client, f"/admin/products/{active_product.id}",
+        form_data(active_product.data) | {"revision": "1", "title": "stale edit"})
+    assert response.status_code == 409
+    assert f'href="/admin/products/{active_product.id}"' in response.text
+    assert 'class="product-form"' not in response.text
+    assert product_service.get_product(active_product.id) == active_product
+
+
+def test_product_update_recovers_submitted_revision_without_advancing(product_client, product_owner,
+        active_product, product_service):
+    login(product_client)
+    response = post(product_client, "/admin/products/1", form_data(active_product.data) |
+        {"revision": str(active_product.revision), "title": "Recover edited title", "channels": "not-a-channel"})
+    assert response.status_code == 400
+    assert 'value="Recover edited title"' in response.text
+    form = re.search(r'<form method="post" action="/admin/products/1".*?</form>', response.text, re.S).group()
+    assert f'name="revision" value="{active_product.revision}"' in form
+    assert product_service.get_product(1) == active_product
+
+
 def test_product_pages_require_real_owner(product_client, product_owner):
     product_client.cookies.set("course_session_fixture-course", "buyer-token")
     for path in ("/admin/products", "/admin/products/new", "/admin/products/1", "/admin/categories"):
@@ -139,6 +214,7 @@ def test_boundary_denial_has_one_safe_server_correlated_audit(
     assert events[0]["request_id"] == response.headers["x-request-id"]
     assert re.fullmatch("[0-9a-f]{32}", events[0]["request_id"])
     assert "secret" not in str(events) and csrf not in str(events)
+    assert "secret-title" not in response.text
 
 
 def test_service_denial_not_duplicated_by_http(product_client, product_owner, active_product, db_path):

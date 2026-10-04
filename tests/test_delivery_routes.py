@@ -162,7 +162,7 @@ def test_standalone_migrated_right_owner_verify_separate_reset_public_restore(or
         assert token and rows(original.db, "SELECT csrf_hash FROM sessions")[0]["csrf_hash"]
         assert rows(original.db, "SELECT expires_at FROM sessions")[0]["expires_at"] == before
         assert client.post("/api/progress", json=dict(course_slug="fixture-course", chapter_number=1, completed=True,
-            csrf_token=token), headers={"Origin": "http://testserver"}).status_code == 204
+            csrf_token=token), headers={"Origin": "http://testserver", "X-CSRF-Token": token}).status_code == 204
         login(client)
         verified = post(client, "/admin/entitlements/1/verify-legacy", dict(revision="1", purpose="gift",
             verification_reason="Individually verified original holder", idempotency_key="verify-public", confirm="on",
@@ -186,6 +186,51 @@ def credential_post(client, path, **data):
 
 def redeem(client, code):
     return credential_post(client, "/access/redeem", code=code, course_slug="fixture-course")
+
+
+def test_progress_header_only_consumer(delivery_client, issued_code):
+    client = delivery_client
+    assert redeem(client, issued_code.raw_code).status_code == 200
+    token = client.cookies.get("course_csrf_fixture-course")
+    response = client.post("/api/progress", json=dict(course_slug="fixture-course", chapter_number=1,
+        completed=True), headers={"Origin": "http://testserver", "X-CSRF-Token": token})
+    assert response.status_code == 204
+    assert "已完成" in client.get("/learn/fixture-course").text
+
+
+@pytest.mark.parametrize("fault", ["missing", "wrong", "duplicate", "conflict", "empty", "wrong-session",
+    "expired", "revoked", "online-off"])
+def test_progress_header_denial_preserves_progress(delivery_client, issued_code, db_path, fault):
+    client = delivery_client
+    assert redeem(client, issued_code.raw_code).status_code == 200
+    token = client.cookies.get("course_csrf_fixture-course")
+    payload = dict(course_slug="fixture-course", chapter_number=1, completed=True)
+    headers = [("Origin", "http://testserver"), ("X-CSRF-Token", token)]
+    if fault == "missing":
+        headers.pop()
+        payload["csrf_token"] = token  # Body-only must never succeed.
+    elif fault == "wrong":
+        headers[-1] = ("X-CSRF-Token", "wrong")
+    elif fault == "empty":
+        headers[-1] = ("X-CSRF-Token", "")
+    elif fault == "duplicate":
+        headers.append(("x-csrf-token", token))
+    elif fault == "conflict":
+        payload["csrf_token"] = "different"
+    elif fault == "wrong-session":
+        with transaction(db_path) as conn:
+            conn.execute("UPDATE sessions SET csrf_hash=?", ("a" * 64,))
+    elif fault in ("expired", "revoked"):
+        with transaction(db_path) as conn:
+            conn.execute("UPDATE sessions SET expires_at='2000-01-01T00:00:00+00:00'" if fault == "expired"
+                else "UPDATE sessions SET revoked_at='2026-10-02T00:00:00+00:00'")
+    else:
+        with transaction(db_path) as conn:
+            conn.execute("UPDATE entitlements SET issued_policy_json=json_set(issued_policy_json, '$.access.online', json('false'))")
+    response = client.post("/api/progress", json=payload, headers=headers)
+    assert response.status_code == 403
+    with transaction(db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM entitlement_progress").fetchone()[0] == 0
 
 
 def test_no_js_progress_and_device_restore_share_progress(delivery_client, issued_code):
@@ -217,9 +262,10 @@ def test_csrf_api_cannot_bypass_form_protection(delivery_client, issued_code):
     payload = dict(course_slug="fixture-course", chapter_number=1, completed=True)
     assert client.post("/api/progress", json=payload, headers={"Origin": "http://testserver"}).status_code == 403
     payload["csrf_token"] = client.cookies.get("course_csrf_fixture-course")
-    assert client.post("/api/progress", json=payload, headers={"Origin": "http://testserver"}).status_code == 204
+    headers = {"Origin": "http://testserver", "X-CSRF-Token": payload["csrf_token"]}
+    assert client.post("/api/progress", json=payload, headers=headers).status_code == 204
     payload["completed"] = "false"
-    assert client.post("/api/progress", json=payload, headers={"Origin": "http://testserver"}).status_code == 400
+    assert client.post("/api/progress", json=payload, headers=headers).status_code == 400
 
 
 @pytest.mark.parametrize("path", ["chapters/1", "chapters/01.html", "chapters/index.html", "assets/free.png",
@@ -234,7 +280,7 @@ def test_all_legacy_and_current_routes_enforce_entitlement_revocation(delivery_c
     client.app.state.entitlement_service.revoke(actor, identity, 1, "External refund confirmed", "revoke")
     assert client.get("/learn/fixture-course/" + path).status_code == 403
     assert client.post("/api/progress", json=dict(course_slug="fixture-course", chapter_number=1, completed=True),
-        headers={"Origin": "http://testserver"}).status_code == 403
+        headers={"Origin": "http://testserver", "X-CSRF-Token": client.cookies.get("course_csrf_fixture-course")}).status_code == 403
     assert credential_post(client, "/access/restore", credential=key).status_code == 403
 
 
@@ -357,7 +403,7 @@ def test_unexpected_error_is_sanitized_without_server_exception_or_secret_logs(d
     monkeypatch.setattr(client.app.state.progress_service, "set_completed", failure)
     response = client.post("/api/progress", json=dict(course_slug="fixture-course", chapter_number=1,
         completed=True, csrf_token=client.cookies.get("course_csrf_fixture-course")),
-        headers={"Origin": "http://testserver"})
+        headers={"Origin": "http://testserver", "X-CSRF-Token": client.cookies.get("course_csrf_fixture-course")})
     assert response.status_code == 500 and "关联 ID" in response.text
     assert secret not in response.text and secret not in caplog.text
     assert all(record.exc_info is None for record in caplog.records if record.name == "course_platform.app")
@@ -400,6 +446,23 @@ def test_audit_filters_paginate_twenty_minimal_events(delivery_client, active_pr
     assert second.text.count(" · product.update · ") == 1
     assert "共 21 条" in first.text and "action=product.update" in first.text
     assert "changes_json" not in first.text and "request_digest" not in first.text
+
+
+def test_audit_query_exact_time_boundaries(delivery_client, db_path):
+    from course_platform.audit import AuditEvent, append_event
+    from test_product_routes import login
+    from unittest.mock import patch
+    from datetime import datetime, timezone
+    with patch("course_platform.audit.utc_now", return_value=datetime(2026, 10, 2, tzinfo=timezone.utc)):
+        with transaction(db_path) as conn:
+            append_event(conn, AuditEvent(None, "request", "boundary", "learning.access", "denied", "denied",
+                "boundary-time", {"error_code": "denied"}))
+    login(delivery_client)
+    for start, end, count in [("2026-10-02T00:00:00+00:00", "2026-10-02T00:00:00+00:00", 1),
+        ("2026-10-02T00:00:00.000001+00:00", "2026-10-03T00:00:00+00:00", 0),
+        ("2026-10-01T00:00:00+00:00", "2026-10-01T23:59:59.999999+00:00", 0)]:
+        response = delivery_client.get("/admin/audit", params={"action": "learning.access", "from": start, "to": end})
+        assert response.status_code == 200 and f"共 {count} 条" in response.text
 
 
 @pytest.fixture

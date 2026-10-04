@@ -332,6 +332,31 @@ def test_consumed_challenge_can_be_replaced_after_business_failure(csrf_service)
     csrf_service.consume_challenge("recover", replacement, replacement)
 
 
+def test_challenge_issuance_retires_only_bounded_obsolete_rows(csrf_service, db_path):
+    live = csrf_service.issue_challenge("recover")
+    with transaction(db_path) as connection:
+        connection.executemany(
+            "INSERT INTO csrf_challenges(nonce_hash,scope,expires_at,consumed_at) VALUES (?,?,?,?)",
+            [(digest(f"obsolete-{i}"), "login",
+              "2026-10-01T23:59:59+00:00" if i % 2 else "2026-10-02T00:10:00+00:00",
+              None if i % 2 else "2026-10-02T00:00:00+00:00") for i in range(260)],
+        )
+    fresh = csrf_service.issue_challenge("login")
+    with transaction(db_path) as connection:
+        rows = [dict(row) for row in connection.execute("SELECT * FROM csrf_challenges")]
+    # The oldest bounded 128-row window includes one still-live challenge.
+    assert len(rows) == 135
+    assert sum(row["scope"] == "login" and row["nonce_hash"] != digest(fresh) for row in rows) == 133
+    csrf_service.consume_challenge("recover", live, live)
+    csrf_service.consume_challenge("login", fresh, fresh)
+    next_token = csrf_service.issue_challenge("login")
+    with transaction(db_path) as connection:
+        assert connection.execute("SELECT count(*) FROM csrf_challenges").fetchone()[0] == 8
+    csrf_service.consume_challenge("login", next_token, next_token)
+    with pytest.raises(BusinessError):
+        csrf_service.consume_challenge("recover", live, live)
+
+
 def test_challenge_consumption_is_atomic(db_path, clock, csrf_service):
     token = csrf_service.issue_challenge("login")
 

@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ...domain import BusinessError
 from ...operations.orders import OrderInput, delivery_text, display_time, require_delivery_origin
-from .auth import AdminRoute, CSRF_COOKIE, _render, _revision, require_admin_post, require_owner
+from .auth import AdminRoute, CSRF_COOKIE, _render, _revision, require_admin_post, require_owner, safe_form_values, field_error
 from .codes import _integer
 
 
@@ -101,14 +101,35 @@ async def search(request: Request):
 @router.post("/orders/new")
 async def record(request: Request):
     actor, form = await require_admin_post(request)
-    _confirmation(form)
+    values = safe_form_values(request, form, ("channel", "shop_id", "external_order_id", "product_id",
+        "paid_cents", "paid_at", "note", "confirm", "idempotency_key"))
+    def recover(error):
+        session = require_owner(request)
+        return _page(request, session, "order_form.html", status=error.status_code, error=error,
+            products=request.app.state.code_service.list_issue_products(), form_values=values,
+            idempotency_key=values["idempotency_key"], field_errors=getattr(error, "field_errors",
+                {"paid_at" if error.code == "invalid_payment_time" else "order": error.message}))
+    request.state.form_recovery = recover
+    if form.get("confirm") != "on":
+        raise field_error("confirm", "请核验店铺订单并确认登记。", code="confirmation_required")
+    parsed = {}
+    for key in ("product_id", "paid_cents"):
+        try:
+            parsed[key] = _integer(form.get(key, ""))
+        except BusinessError:
+            raise field_error(key, "请输入非负整数。", code="invalid_order") from None
+    try:
+        paid_at = datetime.fromisoformat(form.get("paid_at", ""))
+    except ValueError:
+        raise field_error("paid_at", "请输入含时区的 ISO8601 付款时间。", code="invalid_order") from None
     try:
         # Explicit ISO8601 offset input is parsed at the HTTP boundary only.
         data = OrderInput(channel=form.get("channel", ""), shop_id=form.get("shop_id", ""),
-            external_order_id=form.get("external_order_id", ""), product_id=_integer(form.get("product_id", "")),
-            paid_cents=_integer(form.get("paid_cents", "")), paid_at=datetime.fromisoformat(form.get("paid_at", "")), note=form.get("note", ""))
-    except (ValidationError, ValueError):
-        raise BusinessError("invalid_order", "Provide a verified single-product order, nonnegative integer cents and payment time with timezone.", 400) from None
+            external_order_id=form.get("external_order_id", ""), product_id=parsed["product_id"],
+            paid_cents=parsed["paid_cents"], paid_at=paid_at, note=form.get("note", ""))
+    except ValidationError as error:
+        failing = str(error.errors(include_input=False)[0]["loc"][0])
+        raise field_error(failing, "请核对字段格式、付款时区并删除敏感凭证。", code="invalid_order") from None
     order = await run_in_threadpool(request.app.state.order_service.record, actor, data, form.get("idempotency_key", ""))
     return RedirectResponse(f"/admin/orders/{order.id}", status_code=303)
 

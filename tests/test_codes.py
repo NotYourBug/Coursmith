@@ -24,6 +24,30 @@ def issue(service, product, key="batch-key-1", **kwargs):
     return service.issue_batch(Actor(1, "issue-request"), BatchInput(product_id=product.id, purpose="sale", **kwargs), key)
 
 
+def test_batch_overview_counts_boundary_states_and_replacement(code_service, active_product, actor,
+        entitlement_service, db_path, clock):
+    batch = code_service.issue_batch(actor, BatchInput(product_id=active_product.id, purpose="gift", count=4), "overview")
+    entitlement_service.redeem(batch.codes[0].raw_code, expected_course_id=None, request_id="overview")
+    code_service.revoke(actor, 2, 1, "Not delivered",)
+    with transaction(db_path) as conn:
+        conn.execute("UPDATE access_codes SET expires_at=? WHERE id IN (1,2,3)", (clock.now().isoformat(),))
+    summaries, total = code_service.list_batches()
+    assert total == 1
+    summary = summaries[0]
+    assert {key: summary.get(key) for key in ("unused", "redeemed", "voided", "expired")} == {
+        "unused": 1, "redeemed": 1, "voided": 1, "expired": 1}
+    assert summary["creator"] == "owner" and summary["product_title"] == "可售课程"
+    replacement = code_service.replace(actor, 4, 1, "Lost unsaved code", "overview-replace")
+    summaries, total = code_service.list_batches()
+    assert total == 2
+    old = next(row for row in summaries if row["id"] == batch.batch_id)
+    new = next(row for row in summaries if row["id"] == replacement.batch_id)
+    assert (old["unused"], old["redeemed"], old["voided"], old["expired"]) == (0, 1, 2, 1)
+    assert (new["unused"], new["redeemed"], new["voided"], new["expired"]) == (1, 0, 0, 0)
+    assert all(code.raw_code not in str(summaries) for code in batch.codes)
+    assert "code_hash" not in str(summaries) and "issued_policy_json" not in str(summaries)
+
+
 def test_issue_replay_never_returns_plaintext_twice(code_service, active_product, actor, db_path, clock, caplog, tmp_path):
     data = BatchInput(product_id=active_product.id, purpose="sale", count=200)
     first = code_service.issue_batch(actor, data, "batch-key-1")

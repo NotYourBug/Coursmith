@@ -140,10 +140,19 @@ class CsrfService:
     def issue_challenge(self, scope: str) -> str:
         token = secrets.token_urlsafe(32)
         nonce_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
+        now = self.clock()
         with transaction(self.db_path, immediate=True) as connection:
+            # Use the existing rowid B-tree: bounded work, no expiry index or
+            # schema change. Live oldest rows may delay retirement until expiry.
+            connection.execute(
+                """DELETE FROM csrf_challenges WHERE rowid IN
+                   (SELECT rowid FROM csrf_challenges ORDER BY rowid LIMIT 128)
+                   AND (consumed_at IS NOT NULL OR expires_at<=?)""",
+                (to_db_time(now),),
+            )
             connection.execute(
                 "INSERT INTO csrf_challenges (nonce_hash, scope, expires_at) VALUES (?, ?, ?)",
-                (nonce_hash, scope, to_db_time(self.clock() + timedelta(minutes=10))),
+                (nonce_hash, scope, to_db_time(now + timedelta(minutes=10))),
             )
         return token
 
