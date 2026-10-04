@@ -1,0 +1,25 @@
+{% extends "admin/base.html" %}
+{% block title %}历史记录核验 · 智课工坊{% endblock %}
+{% block content %}
+<h1>历史记录核验</h1>
+<p>每个旧会话保留独立权益和进度。不能按课程、时间或已用码猜测持有人；请明确选择权益、核对持有人及订单。核验不发学习凭证，请随后进入独立重置入口。</p>
+<section><h2>历史权益</h2>{% for entitlement in entitlements %}<p><a href="/admin/entitlements/{{ entitlement.id }}">权益 {{ entitlement.id }}</a> · {{ entitlement.course_id }} · {{ entitlement.legacy_state }} · 原截止 {{ display_time(entitlement.expires_at) }}</p>{% else %}<p>暂无历史权益。</p>{% endfor %}</section>
+<section><h2>历史激活码</h2>
+{% for code in codes %}
+<article><h3>历史码 {{ code.id }} · {{ code.course_id }}</h3>
+<p>创建 {{ display_time(code.created_at) }} · 原领取截止 {{ display_time(code.expires_at) }}{% if not code.expires_at %}（未知，未用码须明确选择领取天数）{% endif %} · 使用 {{ display_time(code.used_at) }} · {{ code.legacy_state }}</p>
+{% if code.product_id %}<p><a href="/admin/products/{{ code.product_id }}">商品 {{ code.product_id }}：未用码请先完善政策并通过可售检查</a></p>{% endif %}
+{% if code.legacy_state == 'pending_verification' %}
+<form class="product-form" action="/admin/legacy-codes/{{ code.id }}/resolve" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ code.revision }}">
+<label>核验用途<select name="purpose" required><option value="">请选择</option><option value="sale">销售</option><option value="test">测试</option><option value="gift">赠送</option></select></label>
+{% if code.used_at %}<p>已用码只记录核验用途，不绑定任何旧会话、订单或政策。请从独立权益入口核验。</p>
+{% else %}{% include "admin/legacy_policy_fields.html" %}
+{% if not code.expires_at %}<label>新领取期限（显式 1–365 天）<input type="number" name="activation_days" min="1" max="365" required></label>{% else %}<p>新领取截止保持原值：{{ display_time(code.expires_at) }}</p>{% endif %}
+{% endif %}
+<label>原持有人及核验依据<textarea name="verification_reason" maxlength="1000" required></textarea></label>
+<label class="check"><input type="checkbox" name="confirm" required>已核对原记录、持有人、用途及原/新领取截止，不按课程或时间推测归属</label>
+<button type="submit">核验历史码</button></form>{% endif %}</article>
+{% else %}<p>暂无历史激活码。</p>{% endfor %}</section>
+<nav aria-label="历史记录分页">{% if previous %}<a href="{{ previous }}">上一页</a>{% endif %} {% if next_page %}<a href="{{ next_page }}">下一页</a>{% endif %}</nav>
+{% endblock %}

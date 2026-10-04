@@ -142,14 +142,42 @@ class EntitlementService:
         if not row or row["revoked_at"] or (row["expires_at"] and from_db_time(row["expires_at"]) <= self.clock()):
             raise _denied("session")
         policy = self._policy(connection, row)
+        if row["legacy_state"] == "verified":
+            from ..operations.legacy import verified_entitlement_in_tx
+            verified_entitlement_in_tx(connection, row, policy, self.clock())
+        elif row["legacy_state"] == "resolved_code":
+            self._resolved_code(connection, row, policy)
+        elif policy is not None and (connection.execute(
+            "SELECT 1 FROM legacy_entitlement_origins WHERE entitlement_id=?", (row["id"],)).fetchone()
+            or connection.execute("SELECT 1 FROM legacy_code_origins WHERE code_id=?", (row["source_code_id"],)).fetchone()):
+            # Clearing a state flag cannot turn a preserved legacy right into
+            # modern issuance and bypass its audited verification transaction.
+            # NULL creator alone must not reclassify a modern issued right.
+            raise _denied("session")
         self._verify_content(connection, row, policy)
         return row, policy
+
+    def _resolved_code(self, connection, row, policy):
+        from ..operations.legacy import verified_code_in_tx
+        code = connection.execute("SELECT * FROM access_codes WHERE id=?", (row["source_code_id"],)).fetchone()
+        if not code:
+            raise _denied("session")
+        verified_code_in_tx(connection, code, self.clock())
+        if (not code["used_at"] or code["voided_at"] or row["created_by"] is not None
+            or code["issued_policy_json"] != row["issued_policy_json"]
+            or (code["purpose"], code["verified_at"], code["verified_by"], code["verified_reason"]) !=
+                (row["purpose"], row["verified_at"], row["verified_by"], row["verified_reason"])):
+            raise _denied("session")
+        original_expiry = from_db_time(code["used_at"]) + timedelta(days=policy.access.access_days) if policy.access.access_days else None
+        if row["expires_at"] != (to_db_time(original_expiry) if original_expiry else None):
+            raise _denied("session")
+        return code
 
     def redeem(self, raw_code: str, *, expected_course_id: str | None, request_id: str) -> RedemptionReceipt:
         code_id = None
         try:
             with transaction(self.db_path, immediate=True) as connection:
-                if not isinstance(raw_code, str) or not re.fullmatch(r"CS-[A-Za-z0-9_-]{32}", raw_code):
+                if not isinstance(raw_code, str) or not re.fullmatch(r"CS-(?:[A-Za-z0-9_-]{32}|[A-Za-z0-9_-]{16})", raw_code):
                     raise _denied("redemption")
                 if not isinstance(request_id, str) or not request_id or len(request_id) > 1000:
                     raise _denied("redemption")
@@ -161,6 +189,12 @@ class EntitlementService:
                 code = codes[0]
                 code_id = code["id"]
                 now = self.clock()
+                historical = code["legacy_state"] == "resolved"
+                if historical:
+                    from ..operations.legacy import verified_code_in_tx
+                    verified_code_in_tx(connection, code, now)
+                elif len(raw_code) != 35 or code["legacy_state"] is not None:
+                    raise _denied("redemption")
                 if (code["used_at"] or code["voided_at"] or not code["expires_at"]
                     or from_db_time(code["expires_at"]) <= now
                     or (expected_course_id is not None and code["course_id"] != expected_course_id)
@@ -179,12 +213,12 @@ class EntitlementService:
                     if not order or order["status"] != "paid" or order["product_id"] != policy.product_id:
                         raise _denied("redemption")
                 batch = connection.execute("SELECT revision FROM code_batches WHERE id=?", (code["batch_id"],)).fetchone()
-                if not batch:
+                if not batch and not historical:
                     raise _denied("redemption")
                 used = connection.execute("""UPDATE access_codes SET used_at=?
                     WHERE id=? AND used_at IS NULL AND voided_at IS NULL AND revision=?""",
                     (to_db_time(now), code_id, code["revision"])).rowcount
-                bumped = connection.execute("UPDATE code_batches SET revision=revision+1 WHERE id=? AND revision=?",
+                bumped = 1 if historical else connection.execute("UPDATE code_batches SET revision=revision+1 WHERE id=? AND revision=?",
                                             (code["batch_id"], batch["revision"])).rowcount
                 if used != 1 or bumped != 1:
                     raise _denied("redemption")
@@ -196,7 +230,11 @@ class EntitlementService:
                     (code["course_id"], code["product_id"], code["order_id"], code_id, policy.version, policy.package_hash,
                      policy.access.access_days, policy.access.update_policy, to_db_time(expires) if expires else None,
                      code["purpose"], code["created_by"], to_db_time(now), code["issued_policy_json"])).lastrowid
-                if code["order_id"] is not None and code["verified_at"] is not None:
+                if historical:
+                    connection.execute("""UPDATE entitlements SET legacy_state='resolved_code',
+                        verified_at=?, verified_by=?, verified_reason=? WHERE id=?""",
+                        (code["verified_at"], code["verified_by"], code["verified_reason"], entitlement_id))
+                elif code["order_id"] is not None and code["verified_at"] is not None:
                     # Only copy genuine modern-sale purchase evidence. Historical
                     # unverified orders retain NULL and cannot reset credentials.
                     issuer = connection.execute("""SELECT created_by, purpose, issued_policy_json

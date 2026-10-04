@@ -26,7 +26,7 @@ def test_fresh_storage_and_historical_upgrade_preserve_all_columns(populated_v3,
         columns = {table: [row[1] for row in connection.execute(f"PRAGMA table_info({table})")] for table in before}
         retained_schema = [tuple(row) for row in connection.execute("SELECT type, name, sql FROM sqlite_master WHERE type IN ('index','trigger','view') ORDER BY type, name")]
     backup = tmp_path / "v3-backup.db"
-    report = migrate_database(populated_v3, backup_path=backup)
+    report = migrate_database(populated_v3, backup_path=backup, through_version=4)
     assert (report.from_version, report.to_version) == (3, 4)
     assert operations_snapshot(backup) == before
     with closing(connect(populated_v3)) as connection:
@@ -41,9 +41,9 @@ def test_fresh_storage_and_historical_upgrade_preserve_all_columns(populated_v3,
         current_schema = [tuple(row) for row in connection.execute("SELECT type, name, sql FROM sqlite_master WHERE type IN ('index','trigger','view') ORDER BY type, name")]
         assert all(row in current_schema for row in retained_schema)
     before_rerun = populated_v3.read_bytes()
-    assert migrate_database(populated_v3).to_version == 4 and populated_v3.read_bytes() == before_rerun
+    assert migrate_database(populated_v3, through_version=4).to_version == 4 and populated_v3.read_bytes() == before_rerun
     fresh = tmp_path / "fresh.db"
-    assert migrate_database(fresh).to_version == 4
+    assert migrate_database(fresh, through_version=4).to_version == 4
     with closing(connect(fresh)) as connection:
         assert [row[0] for row in connection.execute("SELECT version FROM schema_migrations")] == [1, 2, 3, 4]
 
@@ -54,7 +54,7 @@ def test_storage_requires_backup_and_rolls_back_ddl(populated_v3, tmp_path, monk
         schema = connection.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall()
         schema = [tuple(row) for row in schema]
     with pytest.raises(BusinessError) as caught:
-        migrate_database(populated_v3)
+        migrate_database(populated_v3, through_version=4)
     assert caught.value.code == "backup_required"
     original = v004_delivery_storage.apply
 
@@ -66,12 +66,12 @@ def test_storage_requires_backup_and_rolls_back_ddl(populated_v3, tmp_path, monk
     monkeypatch.setattr(v004_delivery_storage, "apply", fail)
     backup = tmp_path / "rollback.db"
     with pytest.raises(RuntimeError, match="storage failure"):
-        migrate_database(populated_v3, backup_path=backup)
+        migrate_database(populated_v3, backup_path=backup, through_version=4)
     assert operations_snapshot(populated_v3) == operations_snapshot(backup) == before
     with closing(connect(populated_v3)) as connection:
         assert [tuple(row) for row in connection.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")] == schema
     monkeypatch.setattr(v004_delivery_storage, "apply", original)
-    assert migrate_database(populated_v3, backup_path=tmp_path / "retry.db").to_version == 4
+    assert migrate_database(populated_v3, backup_path=tmp_path / "retry.db", through_version=4).to_version == 4
 
 
 POLICY = {"product_id": 1, "course_id": "c1", "course_slug": "c1", "version": "1.0.0",
@@ -82,7 +82,7 @@ POLICY = {"product_id": 1, "course_id": "c1", "course_slug": "c1", "version": "1
 @pytest.mark.parametrize("table", ["code_batches", "access_codes", "entitlements", "orders"])
 @pytest.mark.parametrize("mutation", ["valid", "no_expiry", "null", "malformed", "missing", "extra", "flag", "days", "duration", "identity", "secret", "secret_escaped"])
 def test_storage_snapshots_are_strict(populated_v3, tmp_path, table, mutation):
-    migrate_database(populated_v3, backup_path=tmp_path / "v3.db")
+    migrate_database(populated_v3, backup_path=tmp_path / "v3.db", through_version=4)
     policy = json.loads(json.dumps(POLICY))
     if mutation == "no_expiry":
         policy["access"].update(access_mode="no_fixed_expiry", access_days=None)
@@ -115,7 +115,7 @@ def test_storage_snapshots_are_strict(populated_v3, tmp_path, table, mutation):
 @pytest.mark.parametrize("statement", ["UPDATE code_batches SET revision=0", "UPDATE code_batches SET revision=1.5",
     "UPDATE orders SET delivery_state='invalid'"])
 def test_storage_revision_and_lifecycle_constraints(populated_v3, tmp_path, statement):
-    migrate_database(populated_v3, backup_path=tmp_path / "v3.db")
+    migrate_database(populated_v3, backup_path=tmp_path / "v3.db", through_version=4)
     with transaction(populated_v3) as connection, pytest.raises(sqlite3.IntegrityError):
         connection.execute(statement)
 

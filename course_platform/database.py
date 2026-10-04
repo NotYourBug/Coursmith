@@ -158,7 +158,7 @@ def backup_database(source: Path, target: Path) -> None:
         raise
 
 
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 
 
 @contextmanager
@@ -217,9 +217,9 @@ def check_database(path: Path) -> dict[str, object]:
 def migrate_database(
     path: Path, *, backup_path: Path | None = None, through_version: int | None = None
 ) -> MigrationReport:
-    from .migrations import v001_baseline, v002_operations, v003_product_lifecycle, v004_delivery_storage
+    from .migrations import MIGRATIONS, v003_product_lifecycle
 
-    migrations = (v001_baseline, v002_operations, v003_product_lifecycle, v004_delivery_storage)
+    migrations = MIGRATIONS
     path = Path(path)
     target = LATEST_SCHEMA_VERSION if through_version is None else through_version
     if type(target) is not int or not 1 <= target <= LATEST_SCHEMA_VERSION:

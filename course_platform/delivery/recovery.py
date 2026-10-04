@@ -140,7 +140,15 @@ class RecoveryService:
                     return CredentialReceipt(entitlement_id, None, True)
                 row, policy = self.entitlements._entitlement(connection, entitlement_id)
                 CodeService._revision(row, revision)
-                self._verification(connection, row, policy)
+                if row["legacy_state"] == "verified":
+                    from ..operations.legacy import verified_entitlement_in_tx
+                    verified_entitlement_in_tx(connection, row, policy, self.clock())
+                elif row["legacy_state"] == "resolved_code":
+                    self.entitlements._resolved_code(connection, row, policy)
+                    if row["purpose"] not in ("test", "gift"):
+                        raise BusinessError("purchase_verification_required", "Verify the historical holder against a bound paid order before reset.", 409)
+                else:
+                    self._verification(connection, row, policy)
                 if row["purpose"] == "sale" and from_db_time(row["verified_at"]) > self.clock():
                     raise BusinessError("purchase_verification_required", "Purchase verification must already have occurred.", 409)
                 now = to_db_time(self.clock())

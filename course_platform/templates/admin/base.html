@@ -10,6 +10,7 @@
   <header><a class="brand" href="/admin">智课工坊 · 管理后台</a>
     {% if authenticated %}
     <nav aria-label="后台导航"><a href="/admin">后台首页</a>{% if request.app.state.product_service is defined %}<a href="{{ request.url_for('product_list') }}">商品管理</a><a href="{{ request.url_for('category_list') }}">分类管理</a>{% endif %}{% if request.app.state.code_service is defined %}<a href="{{ request.url_for('code_batch_list') }}">发码批次</a>{% endif %}{% if request.app.state.order_service is defined %}<a href="{{ request.url_for('order_list') }}">店铺订单</a>{% endif %}<a href="/admin/account/password">修改密码</a></nav>
+    {% if request.app.state.legacy_service is defined %}<a href="{{ request.url_for('legacy_codes') }}">历史核验</a>{% endif %}
     <form action="/admin/logout" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="revision" value="{{ revision }}">
