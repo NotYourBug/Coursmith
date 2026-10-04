@@ -242,6 +242,40 @@ def test_mobile_preview_and_no_js_progress(real_browser, mobile_page, live_site)
         context.close()
 
 
+def test_same_origin_referrer_policy_suppresses_cross_origin_navigation(real_browser, mobile_page, live_site, server_factory, tmp_path):
+    """Capture Chrome's actual requests; same-origin control must send Referer."""
+    site = live_site
+    with server_factory(site.content, tmp_path / "referer-destination.db", cli=False, tls=True) as destination:
+        assert destination.url != site.url
+        page = mobile_page
+        response = page.goto(site.url + "/help")
+        assert response.status == 200 and response.headers["referrer-policy"] == "same-origin"
+        navigations = []
+        def capture(request):
+            if request.is_navigation_request():
+                navigations.append((request.url, request.all_headers()))
+        page.on("request", capture)
+        try:
+            # Native click from a real rendered page, without goto(referrer=...),
+            # noreferrer or a request-header override.
+            page.locator("header a.brand").click()
+            expect(page).to_have_url(site.url + "/")
+            control = next(headers for url, headers in navigations if url == site.url + "/")
+            assert control["referer"] == site.url + "/help"
+            page.goto(site.url + "/help")
+            # Vary only that anchor's target to the other temporary HTTPS origin;
+            # keeping scheme avoids downgrade suppression as a false explanation.
+            page.locator("header a.brand").evaluate("(a,url) => a.href=url", destination.url + "/")
+            page.locator("header a.brand").click()
+            expect(page).to_have_url(destination.url + "/")
+            cross = next(headers for url, headers in navigations if url == destination.url + "/")
+            assert "referer" not in cross
+            assert page.locator("body").is_visible()
+        finally:
+            page.remove_listener("request", capture)
+    print("Actual Chrome HTTPS navigation: same-origin Referer retained; second loopback origin Referer absent")
+
+
 @pytest.mark.parametrize("format", ["pdf", "zip"])
 def test_download_only_original_promise_survives_archive(real_browser, live_site, format):
     context = real_browser.new_context(viewport={"width": 390, "height": 844}, ignore_https_errors=True)

@@ -4,6 +4,7 @@ from contextlib import closing
 import hashlib
 import re
 import shutil
+from pathlib import Path
 
 import httpx
 import pytest
@@ -20,6 +21,94 @@ from test_product_routes import login, post
 import test_legacy_delivery as historical
 
 original_restore_history = historical.original
+
+
+@pytest.mark.parametrize("original_state", ["changed", "absent"])
+def test_runbook_pre_v5_conversion_uses_matched_copied_bytes(original_restore_history, tmp_path, clock, monkeypatch, original_state):
+    """Execute the documented ordering, not a correct order invented by the test."""
+    import subprocess
+    import sys
+    import os
+    import shlex
+    from course_platform.content_inspection import inspect_package
+
+    original = original_restore_history
+    before = snapshot(original.source, ("courses", "chapters", "access_codes", "sessions", "progress", "events"))
+    root = tmp_path / "handoff-copy"
+    copied = root / "content" / "fixture-course"
+    sealed = root / "old-compatible-content" / "fixture-course"
+    shutil.copytree(original.package, copied)
+    shutil.copytree(original.package, sealed)
+    inventory = lambda p: {f.relative_to(p).as_posix(): f.read_bytes() for f in p.rglob("*") if f.is_file()}
+    assert inventory(copied) == inventory(sealed) == inventory(original.package)
+    fingerprint = inspect_package(copied).fingerprint
+    db, compatible = root / "working.db", root / "old-compatible.db"
+    backup_database(original.source, db)
+    backup_database(original.source, compatible)
+    text = (Path(__file__).resolve().parents[1] / "docs/operations/admin-v1-runbook.md").read_text(encoding="utf8")
+    section = text.split("## 旧库维护窗口、匹配备份、切换与回滚")[1].split("## 验收命令及环境限制")[0]
+    if "### pre-v5" in section:
+        section = section.split("### pre-v5", 1)[1].split("### ", 1)[0]
+    # In the original handoff, the inline migrate command precedes the Python
+    # relocation example. The corrected historical branch must reverse that.
+    steps = re.finditer(r"```python\n(?P<python>.*?)```|`(?P<cli>[^`\n]*migrate --backup[^`\n]*)`", section, re.S)
+    saved_bytes = (original.package / "chapters/01.html").read_bytes()
+    hidden = original.package.with_name("original-withheld")
+    if original_state == "changed":
+        (original.package / "chapters/01.html").write_text("CHANGED ORIGINAL BEFORE CONVERSION", encoding="utf8")
+    else:
+        original.package.rename(hidden)
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.update(COURSE_DATABASE=str(db), COURSE_CONTENT_ROOT=str(root / "content"), COURSE_ENVIRONMENT="test",
+               COURSE_SITE_ORIGIN="http://127.0.0.1:8000", DEEPSEEK_API_KEY="")
+    executed = []
+    try:
+        for step in steps:
+            if step["python"] is not None:
+                code = step["python"]
+                if "copied_db =" not in code:
+                    continue  # Separate backup-only example: fixture already made nonoverwriting copies.
+                for label, value in {"<副本DB绝对路径>": db, "<副本内容根绝对路径>": root / "content",
+                                     "<兼容快照DB绝对路径>": compatible,
+                                     "<兼容快照内容根绝对路径>": root / "old-compatible-content",
+                                     "<该课程目录>": "fixture-course"}.items():
+                    code = code.replace(label, str(value).replace("\\", "/"))
+                try:
+                    exec(compile(code, "runbook-relocation", "exec"), {})
+                except Exception as exc:
+                    pytest.fail("Documented relocation cannot consume the matched old backup after the documented order: " + type(exc).__name__)
+                executed.append("relocation")
+            else:
+                # I2 isolates order/content semantics; I1 separately executes the
+                # documented interpreter in a genuinely installed environment.
+                args = shlex.split(step["cli"].split("migrate --backup", 1)[1].strip())
+                assert args == ["<副本升级前的非覆盖备份>"]
+                result = subprocess.run([sys.executable, "-m", "course_platform.cli", "migrate", "--backup", str(root / "before-v5.db")],
+                    env=env, capture_output=True, text=True, timeout=30)
+                assert result.returncode == 0, "Documented offline conversion failed"
+                executed.append("migration")
+        assert executed == ["relocation", "migration"], "Historical conversion must follow verified copied-only relocation"
+        assert check_database(db)["version"] == 5 and check_database(db)["foreign_keys"] == "ok"
+        with closing(open_readonly(db)) as c:
+            assert {tuple(row) for row in c.execute("SELECT content_available,package_hash FROM legacy_entitlement_origins")} == {(1, fingerprint)}
+            assert [tuple(row) for row in c.execute("SELECT session_hash,course_id,created_at,expires_at FROM sessions ORDER BY rowid")] == before["sessions"]
+            assert [tuple(row) for row in c.execute("SELECT * FROM progress ORDER BY rowid")] == before["progress"]
+            assert c.execute("SELECT count(*) FROM entitlements WHERE source_code_id IS NOT NULL OR verified_at IS NOT NULL OR issued_policy_json IS NOT NULL").fetchone()[0] == 0
+        monkeypatch.setattr("course_platform.app.utc_now", clock.now)
+        app = create_app(Settings("", "", root / "content", db, 72, "test", "http://testserver"))
+        with TestClient(app, client=("198.51.100.8", 50001)) as client:
+            client.cookies.set("course_session_fixture-course", original.sessions[0].session_id)
+            page = client.get("/learn/fixture-course/chapters/1")
+            assert page.status_code == 200 and "取消完成" in page.text and "CHANGED ORIGINAL BEFORE CONVERSION" not in page.text
+    finally:
+        if original_state == "absent":
+            hidden.rename(original.package)
+        else:
+            (original.package / "chapters/01.html").write_bytes(saved_bytes)
+    assert snapshot(original.source, tuple(before)) == snapshot(compatible, tuple(before)) == before
+    assert inventory(sealed) == inventory(copied)
+    print(f"Documented pre-v5 conversion passed with original {original_state}; matched old-compatible DB/content unchanged")
 
 
 def make_sale_ready(site):
@@ -318,9 +407,14 @@ def test_matched_copied_database_and_content_restore_reads_relocated_bytes(ready
         assert tuple(row) == (manifest.course_id, manifest.slug, manifest.version, inspection.fingerprint)
         chapters = [tuple(r) for r in c.execute("SELECT chapter_number,title,path,free_preview FROM chapters ORDER BY chapter_number")]
         assert chapters == sorted((ch.number, ch.title, ch.path, int(ch.free_preview)) for ch in manifest.chapters)
-    # Only the explicitly verified copied DB's relocation metadata is changed.
-    with transaction(backup) as c:
-        c.execute("UPDATE courses SET content_path=? WHERE course_id=?", (str(copied.resolve()), manifest.course_id))
+    # Consume the actual latest5 operator example, not an equivalent private recipe.
+    runbook = (Path(__file__).resolve().parents[1] / "docs/operations/admin-v1-runbook.md").read_text(encoding="utf8")
+    section = runbook.split("### latest5", 1)[1].split("### pre-v5", 1)[0]
+    code = re.search(r"```python\n(.*?)```", section, re.S).group(1)
+    for label, value in {"<副本DB绝对路径>": backup, "<副本内容根绝对路径>": content,
+                         "<该课程目录>": "fixture-course"}.items():
+        code = code.replace(label, str(value).replace("\\", "/"))
+    exec(compile(code, "runbook-latest5-relocation", "exec"), {})
     after = snapshot(backup, all_tables)
     assert {k:v for k,v in after.items() if k != "courses"} == {k:v for k,v in before.items() if k != "courses"}
     assert check_database(backup)["foreign_keys"] == "ok" and check_database(backup)["version"] == 5

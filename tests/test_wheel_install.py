@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 import shutil
+import re
+import shlex
 import subprocess
 import sys
 import zipfile
@@ -27,8 +29,8 @@ def installed_release(tmp_path_factory):
                 and "__pycache__" not in path.parts}
     assert required <= shipped, "Installed wheel omits delivery resources: " + repr(sorted(required - shipped))
     assert not any(name.startswith("tests/") or "frozen_original_access" in name for name in shipped)
-    subprocess.run([sys.executable, "-m", "venv", str(outside / "venv")], check=True, timeout=60)
-    python = outside / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    subprocess.run([sys.executable, "-m", "venv", str(outside / ".venv")], check=True, timeout=60)
+    python = outside / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     install_args = [str(python), "-m", "pip", "install", "--timeout", "10", "--retries", "1"]
     if env.get("COURSMITH_WHEELHOUSE"):
         install_args += ["--no-index", "--find-links", env["COURSMITH_WHEELHOUSE"]]
@@ -37,6 +39,58 @@ def installed_release(tmp_path_factory):
                                cwd=outside, env=env, capture_output=True, text=True, timeout=240)
     assert installed.returncode == 0, "Fresh installation environment failed: " + installed.stderr[-2000:]
     return outside, python, wheel, env
+
+
+@pytest.mark.packaging
+def test_runbook_operational_commands_use_the_installed_environment(installed_release, release_content, server_factory):
+    """Bare python after venv creation must not silently select the base runtime."""
+    outside, python, _, env = installed_release
+    text = (Path(__file__).resolve().parents[1] / "docs/operations/admin-v1-runbook.md").read_text(encoding="utf8")
+    operational = text.split("## 验收命令及环境限制")[0]
+    snippets = re.findall(r"`([^`\n]+)`", operational)
+    snippets += [line for block in re.findall(r"```(?:powershell|text)\n(.*?)```", operational, re.S)
+                 for line in block.splitlines()]
+    commands = [shlex.split(s) for s in snippets if re.match(r"(?:python|\.venv/Scripts/python\.exe)(?: |$)", s)]
+    commands = [c for c in commands if c != ["python"] and c[1:3] not in (["-m", "venv"], ["-m", "pip"])]
+    assert commands, "No executable operator commands were found"
+    env = env.copy()
+    env.pop("VIRTUAL_ENV", None)
+    # An unactivated shell: bare python resolves to the genuine base interpreter.
+    env["PATH"] = str(Path(sys._base_executable).parent) + os.pathsep + env.get("PATH", "")
+    content = outside / "operator-content"
+    shutil.copytree(release_content, content / "fixture-course")
+    db = outside / "operator.db"
+    env.update(COURSE_DATABASE=str(db), COURSE_CONTENT_ROOT=str(content), COURSE_SITE_ORIGIN="http://127.0.0.1:8000",
+               COURSE_ENVIRONMENT="test", COURSE_TRUSTED_PROXY_CIDRS="", DEEPSEEK_API_KEY="")
+    selected = []
+    for command in commands:
+        executable = str(outside / command[0]) if "/" in command[0] else shutil.which(command[0], path=env["PATH"])
+        probe = subprocess.run([executable, "-c",
+            "import sys,course_platform;from pathlib import Path;"
+            "assert Path(sys.executable).resolve()==Path(sys.argv[1]).resolve();"
+            "assert Path(sys.prefix) in Path(course_platform.__file__).resolve().parents", str(python)],
+            cwd=outside, env=env, capture_output=True, text=True, timeout=30)
+        assert probe.returncode == 0, "Documented operator command selected a different/uninstalled interpreter: " + " ".join(command[:4])
+        selected.append((executable, command[1:]))
+    # Run the documented initialization migration, then inspection; prompts are
+    # checked via real init-admin --help, never feed credentials through argv.
+    migration = next((exe, args) for exe, args in selected if args == ["-m", "course_platform.cli", "migrate"])
+    result = subprocess.run([migration[0], *migration[1]], cwd=outside, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0 and '"to_version": 5' in result.stdout
+    result = subprocess.run([migration[0], *migration[1], "--check-only"], cwd=outside, env=env,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0 and '"version": 5' in result.stdout
+    init = next((exe, args) for exe, args in selected if args == ["-m", "course_platform.cli", "init-admin"])
+    assert subprocess.run([init[0], *init[1], "--help"], cwd=outside, env=env, capture_output=True, timeout=30).returncode == 0
+    for module, cli in (("course_platform.cli", True), ("uvicorn", False)):
+        exe, args = next((exe, args) for exe, args in selected if args[:2] == ["-m", module] and
+                         ("serve" in args if cli else "course_platform.app:create_app" in args))
+        if not cli:
+            assert "--factory" in args and "--no-proxy-headers" in args
+        with server_factory(content, db, python=exe, cwd=outside, cli=cli) as site:
+            import httpx
+            assert httpx.get(site.url + "/help", trust_env=False, timeout=10).status_code == 200
+    print("Documented unactivated-shell interpreter, latest5 CLI inspection, init-admin help, installed CLI/factory sockets passed")
 
 
 @pytest.mark.packaging
