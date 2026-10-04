@@ -337,3 +337,150 @@ def delivery_client(db_path, delivery_content, active_product, clock, monkeypatc
     app = create_app(Settings("", "", fixture_package.parent, db_path, 72, "test", "http://testserver"))
     with TestClient(app, client=("198.51.100.8", 50001), follow_redirects=False) as client:
         yield client
+
+
+@pytest.fixture
+def release_content(delivery_content):
+    """Accepted nested resources and SVG, prepared before actual sale readiness."""
+    import base64
+
+    package = delivery_content
+    manifest = json.loads((package / "manifest.json").read_text(encoding="utf8"))
+    manifest["chapters"][0]["path"] = "lessons/unit/intro.html"
+    # Nonascending declared order is an accepted immutable release contract.
+    manifest["chapters"].reverse()
+    (package / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf8")
+    nested = package / "lessons" / "unit"
+    nested.mkdir(parents=True)
+    (nested / "intro.html").write_text('''<!doctype html><html><head><title>第一章</title>
+<style>@import /* accepted */ "../../assets/theme.css";
+.image-set {background-image:image-set("../../assets/free.png" 1x);width:20px;height:20px}</style>
+</head><body><h1>第一章</h1><div class="image-set"></div><img src="../../assets/free.png">
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20">
+<path id="left" d="M0 0 H20 V20 H0 Z" fill="red"/><path id="right" d="M20 0 H40 V20 H20 Z" fill="blue"/>
+</svg><p>Matched restored lesson bytes</p></body></html>''', encoding="utf8")
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
+    (package / "assets" / "free.png").write_bytes(png)
+    (package / "assets" / "theme.css").write_text('h1 {color:rgb(12, 34, 56)}', encoding="utf8")
+    with zipfile.ZipFile(package / "downloads" / "course.zip", "w") as archive:
+        for path in package.rglob("*"):
+            if path.is_file() and path.name != "course.zip":
+                archive.write(path, path.relative_to(package).as_posix())
+    return package
+
+
+@pytest.fixture
+def server_factory(tmp_path):
+    """Run the actual CLI or documented factory contract over a real socket."""
+    import os
+    import socket
+    import subprocess
+    import sys
+    import time
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    import httpx
+
+    @contextmanager
+    def start(content, database, *, python=None, cwd=None, production=False,
+              trusted="", cli=True, tls=False):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        url = f"{'https' if tls else 'http'}://127.0.0.1:{port}"
+        origin = "https://courses.example" if production else url
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        env.update(COURSE_DATABASE=str(database.resolve()), COURSE_CONTENT_ROOT=str(content.resolve()),
+                   COURSE_SITE_ORIGIN=origin, COURSE_ENVIRONMENT="production" if production else "test",
+                   COURSE_SESSION_TTL_HOURS="72", COURSE_TRUSTED_PROXY_CIDRS=trusted,
+                   DEEPSEEK_API_KEY="", PYTHONUTF8="1")
+        args = [str(python or sys.executable), "-X", "utf8", "-m"]
+        args += (["course_platform.cli", "serve", "--host", "127.0.0.1", "--port", str(port)] if cli else
+                 ["uvicorn", "course_platform.app:create_app", "--factory", "--no-proxy-headers",
+                  "--host", "127.0.0.1", "--port", str(port)])
+        if tls:
+            from datetime import datetime, timedelta, timezone
+            from ipaddress import ip_address
+            from cryptography import x509
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import rsa
+            from cryptography.x509.oid import NameOID
+            assert not cli, "TLS uses the documented direct factory server contract"
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+            now = datetime.now(timezone.utc)
+            cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+                    .serial_number(x509.random_serial_number()).not_valid_before(now-timedelta(minutes=1))
+                    .not_valid_after(now+timedelta(days=1)).add_extension(x509.SubjectAlternativeName([
+                        x509.IPAddress(ip_address("127.0.0.1"))]), critical=False).sign(key, hashes.SHA256()))
+            cert_path, key_path = tmp_path / f"test-{port}.pem", tmp_path / f"test-{port}.key"
+            cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+            key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                   serialization.NoEncryption()))
+            args += ["--ssl-certfile", str(cert_path), "--ssl-keyfile", str(key_path)]
+        log_path = tmp_path / f"server-{port}.log"
+        with log_path.open("wb") as log:
+            process = subprocess.Popen(args, cwd=cwd or Path(__file__).resolve().parents[1], env=env,
+                                       stdout=log, stderr=log)
+            try:
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        pytest.fail("Real server startup failed; see temporary server log")
+                    try:
+                        if httpx.get(url + "/help", timeout=1, verify=not tls, trust_env=False).status_code == 200:
+                            break
+                    except httpx.TransportError:
+                        pass
+                    time.sleep(.05)
+                else:
+                    pytest.fail("Real server readiness timeout (environment failure, never skip)")
+                yield SimpleNamespace(url=url, origin=origin, db=database, content=content,
+                                      log=log_path, process=process)
+            finally:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=10)
+    return start
+
+
+@pytest.fixture
+def live_site(release_content, tmp_path, server_factory):
+    from course_platform.admin.auth import AdminService
+    from course_platform.database import migrate_database
+
+    path = tmp_path / "browser.db"
+    migrate_database(path)
+    # The only initial service operation; daily business operations are UI-only.
+    AdminService(path).initialize_owner("owner", "example-pass-123")
+    with server_factory(release_content.parent, path, cli=False, tls=True) as site:
+        yield site
+
+
+@pytest.fixture
+def real_browser():
+    import os
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        channel = os.environ.get("COURSMITH_BROWSER_CHANNEL", "").strip()
+        browser = playwright.chromium.launch(**({"channel": channel} if channel else {}))
+        print(f"Actual browser: {browser.version}; channel={channel or 'bundled chromium'}")
+        try:
+            yield browser
+        finally:
+            browser.close()
+
+
+@pytest.fixture
+def mobile_page(real_browser):
+    context = real_browser.new_context(viewport={"width": 390, "height": 844}, ignore_https_errors=True)
+    try:
+        yield context.new_page()
+    finally:
+        context.close()

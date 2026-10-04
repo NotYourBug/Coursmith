@@ -111,7 +111,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "img-src 'self' data:; object-src 'none'; base-uri 'none'; "
                 "frame-ancestors 'none'; form-action 'self'")
         for key, value in (("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"),
-            ("Referrer-Policy", "no-referrer"), ("Permissions-Policy", "camera=(), microphone=(), geolocation=()")):
+            # no-referrer makes native form POST Origin opaque ("null") in
+            # Chromium. Preserve same-origin form Origin, without sending
+            # referrers to another origin; strict Origin/CSRF checks still apply.
+            ("Referrer-Policy", "same-origin"), ("Permissions-Policy", "camera=(), microphone=(), geolocation=()")):
             response.headers.setdefault(key, value)
         return response
 

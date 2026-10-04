@@ -23,11 +23,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9", "pytest-cov>=6,<7", "ruff>=0.11,<1", "httpx2>=2,<3"]
+dev = ["pytest>=8,<9", "pytest-cov>=6,<7", "ruff>=0.11,<1", "httpx2>=2,<3", "build>=1.6,<2", "cryptography>=46,<50"]
 feishu = ["lark-oapi>=1.4,<2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "browser: mandatory real browser delivery acceptance (missing browser is an error)",
+  "packaging: mandatory fresh installed wheel acceptance",
+]
 
 [tool.ruff]
 target-version = "py311"
@@ -38,3 +42,6 @@ select = ["E9", "F63", "F7", "F82"]
 
 [tool.setuptools.packages.find]
 include = ["course_platform*"]
+
+[tool.setuptools.package-data]
+course_platform = ["templates/**/*.html", "static/**/*"]
