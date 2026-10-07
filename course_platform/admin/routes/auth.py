@@ -264,10 +264,14 @@ async def password_change(request: Request):
             # A concurrently revoked session must not add a second audit for
             # the original rejection just to render its retry form.
             raise error
+        error_field = {
+            "invalid_password": "new_password", "password_mismatch": "confirm_password",
+            "invalid_credentials": "current_password",
+        }.get(error.code)
         return _render(request, "password.html", status=error.status_code, error=error,
                        authenticated=True, revision=session.revision,
                        csrf_token=request.cookies.get(CSRF_COOKIE, ""),
-                       field_errors={"confirm_password" if error.code == "password_mismatch" else "current_password": error.message})
+                       field_errors={error_field: error.message} if error_field else {})
     response = RedirectResponse("/admin/login", status_code=303)
     _clear_session(request, response)
     return response

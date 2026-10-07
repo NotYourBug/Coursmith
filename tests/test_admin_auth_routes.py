@@ -307,6 +307,97 @@ def test_password_failure_keeps_a_usable_form_without_secrets(admin_client, admi
         assert secret not in response.text
 
 
+@pytest.mark.parametrize("current,new,confirmation,expected_field,status", [
+    (PASSWORD, "too-short", "too-short", "new_password", 400),
+    (PASSWORD, "N" * 129, "N" * 129, "new_password", 400),
+    (PASSWORD, "replacement-secret", "different-secret", "confirm_password", 400),
+    ("incorrect-current-secret", "replacement-secret", "replacement-secret", "current_password", 401),
+])
+def test_password_error_identifies_real_field_without_mutation(
+        admin_client, admin_service, db_path, current, new, confirmation, expected_field, status):
+    # A catch-all current-password label misdirects valid owners whose new
+    # password violates the policy. Exercise actual domain errors/private POST.
+    admin_service.initialize_owner("owner", PASSWORD)
+    assert sign_in(admin_client).status_code == 303
+    page = admin_client.get("/admin/account/password")
+    with transaction(db_path) as connection:
+        owner_before = dict(connection.execute("SELECT * FROM admins").fetchone())
+        sessions_before = [dict(row) for row in connection.execute("SELECT * FROM admin_sessions")]
+    response = admin_client.post("/admin/account/password", data={
+        "csrf_token": field(page, "csrf_token"), "revision": field(page, "revision"),
+        "current_password": current, "new_password": new, "confirm_password": confirmation,
+    }, headers={"Origin": "http://testserver"})
+    assert response.status_code == status
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-request-id"] in response.text
+    assert re.findall(r'data-field-error="([^"]+)"', response.text) == [expected_field]
+    assert field(response, "revision") == "1"
+    password_inputs = re.findall(r'<input[^>]+type="password"[^>]*>', response.text)
+    assert len(password_inputs) == 3 and all("value=" not in tag for tag in password_inputs)
+    for secret in (current, new, confirmation):
+        assert secret not in response.text
+    with transaction(db_path) as connection:
+        assert dict(connection.execute("SELECT * FROM admins").fetchone()) == owner_before
+        assert [dict(row) for row in connection.execute("SELECT * FROM admin_sessions")] == sessions_before
+
+
+def test_unclassified_password_error_has_only_safe_form_level_fallback(
+        admin_client, admin_service, db_path, monkeypatch):
+    admin_service.initialize_owner("owner", PASSWORD)
+    assert sign_in(admin_client).status_code == 303
+    page = admin_client.get("/admin/account/password")
+
+    def unavailable(*args, **kwargs):
+        # Inject a safe service failure, below real owner/Origin/body/CSRF gates;
+        # no fake HTTP handler and no invented successful password mutation.
+        raise BusinessError("temporarily_unavailable", "Password update is unavailable.", 503)
+
+    monkeypatch.setattr(admin_service, "change_password", unavailable)
+    response = admin_client.post("/admin/account/password", data={
+        "csrf_token": field(page, "csrf_token"), "revision": "1", "current_password": PASSWORD,
+        "new_password": "replacement-secret", "confirm_password": "replacement-secret",
+    }, headers={"Origin": "http://testserver"})
+    assert response.status_code == 503 and response.headers["cache-control"] == "no-store"
+    assert "Password update is unavailable." in response.text
+    assert 'action="/admin/account/password"' in response.text
+    assert "data-field-error=" not in response.text
+    for secret in (PASSWORD, "replacement-secret"):
+        assert secret not in response.text
+    with transaction(db_path) as connection:
+        assert connection.execute("SELECT revision FROM admins").fetchone()[0] == 1
+
+
+def test_password_error_cannot_render_retry_after_concurrent_revocation(
+        admin_client, admin_service, db_path, monkeypatch):
+    admin_service.initialize_owner("owner", PASSWORD)
+    assert sign_in(admin_client).status_code == 303
+    page = admin_client.get("/admin/account/password")
+    real_change = admin_service.change_password
+
+    def revoke_after_rejection(*args, **kwargs):
+        try:
+            return real_change(*args, **kwargs)
+        except BusinessError:
+            with transaction(db_path, immediate=True) as connection:
+                connection.execute("DELETE FROM admin_sessions")
+            raise
+
+    monkeypatch.setattr(admin_service, "change_password", revoke_after_rejection)
+    response = admin_client.post("/admin/account/password", data={
+        "csrf_token": field(page, "csrf_token"), "revision": "1", "current_password": PASSWORD,
+        "new_password": "too-short", "confirm_password": "too-short",
+    }, headers={"Origin": "http://testserver"})
+    assert response.status_code == 400 and response.headers["cache-control"] == "no-store"
+    assert response.headers["x-request-id"] in response.text
+    assert 'action="/admin/account/password"' not in response.text
+    assert "data-field-error=" not in response.text
+    for secret in (PASSWORD, "too-short"):
+        assert secret not in response.text
+    with transaction(db_path) as connection:
+        assert connection.execute("SELECT revision FROM admins").fetchone()[0] == 1
+        assert connection.execute("SELECT count(*) FROM admin_sessions").fetchone()[0] == 0
+
+
 def test_unsupported_cli_password_argument_is_not_echoed(capsys):
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["init-admin", "--password", "argv-secret"])
