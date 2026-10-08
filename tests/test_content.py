@@ -77,3 +77,74 @@ def test_external_resources_block_publish(fixture_package):
 
     assert report.ok is False
     assert any("external" in error for error in report.errors)
+
+
+def test_inline_script_and_event_handler_block_publish(fixture_package):
+    html_path = fixture_package / "chapters" / "01.html"
+    html_path.write_text(
+        "<!doctype html><html><head><title>unsafe</title></head>"
+        '<body onload="steal()"><script>steal()</script></body></html>',
+        encoding="utf-8",
+    )
+
+    report = validate_course_package(fixture_package)
+
+    assert report.ok is False
+    assert any("script elements" in error for error in report.errors)
+    assert any("event handlers" in error for error in report.errors)
+
+
+def test_free_chapter_fields_must_agree(fixture_package):
+    data = json.loads((fixture_package / "manifest.json").read_text(encoding="utf-8"))
+    data["chapters"][0]["free_preview"] = False
+    (fixture_package / "manifest.json").write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+
+    report = validate_course_package(fixture_package)
+
+    assert report.ok is False
+    assert "free_chapters" in report.errors[0]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<a href=javascript:steal()>link</a>',
+        '<a href="java&#x09;script:steal()">link</a>',
+        '<img src=https://example.com/p.png>',
+        '<svg><a xlink:href=javascript:steal()>link</a></svg>',
+        '<img src=../assets/missing.png>',
+    ],
+)
+def test_parsed_html_rejects_unsafe_or_missing_resources(fixture_package, body):
+    (fixture_package / "chapters/01.html").write_text(
+        f"<!doctype html><html><head></head><body>{body}</body></html>", encoding="utf-8"
+    )
+    assert validate_course_package(fixture_package).ok is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<svg><rect fill="url(https://example.com/paint.svg#p)"/></svg>',
+        '<svg><set attributeName="href" to="https://example.com/image.png"/></svg>',
+    ],
+)
+def test_package_validation_rejects_svg_url_bypasses(fixture_package, body):
+    (fixture_package / "chapters/01.html").write_text(
+        f"<!doctype html><html><head></head><body>{body}</body></html>", encoding="utf-8"
+    )
+    assert validate_course_package(fixture_package).ok is False
+
+
+@pytest.mark.parametrize("suffix", ["SVG", "HTML"])
+def test_package_validation_rejects_uppercase_active_assets(fixture_package, suffix):
+    (fixture_package / "assets").mkdir()
+    body = (
+        '<svg><script>steal()</script></svg>'
+        if suffix == "SVG"
+        else '<!doctype html><html><head></head><body><script>steal()</script></body></html>'
+    )
+    (fixture_package / "assets" / f"active.{suffix}").write_text(body, encoding="utf-8")
+    assert validate_course_package(fixture_package).ok is False

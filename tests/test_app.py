@@ -1,73 +1,70 @@
-import shutil
-from pathlib import Path
-
+"""Original public consumers now run real production services and POST security."""
 import pytest
-from fastapi.testclient import TestClient
 
-from course_platform.access import AccessService
-from course_platform.app import create_app
-from course_platform.settings import Settings
+from test_delivery_routes import redeem
 
 
 @pytest.fixture
-def client(tmp_path):
-    source = Path(__file__).parent / "fixtures" / "course-package"
-    content_root = tmp_path / "content" / "courses"
-    shutil.copytree(source, content_root / "fixture-course")
-    settings = Settings(
-        base_url="https://api.deepseek.com/",
-        api_key="",
-        content_root=content_root,
-        database_path=tmp_path / "data" / "course.db",
-        session_ttl_hours=72,
-        environment="test",
-    )
-    app = create_app(settings)
-    with TestClient(app) as test_client:
-        yield test_client
+def client(delivery_client):
+    return delivery_client
 
 
 @pytest.fixture
-def access_code(client):
-    service = client.app.state.access_service
-    return service.create_access_code("fixture-course")
+def access_code(client, actor):
+    return client.app.state.access_service.create_access_code("fixture-course", actor=actor)
 
 
 def test_course_detail_is_public(client):
     response = client.get("/courses/fixture-course")
-
     assert response.status_code == 200
-    assert "Fixture Course" in response.text
+    assert "可售课程" in response.text
 
 
 def test_chapter_requires_access(client):
-    response = client.get("/learn/fixture-course/chapters/1")
-
-    assert response.status_code == 403
+    assert client.get("/learn/fixture-course/chapters/1").status_code == 403
 
 
-def test_redeem_redirects_and_sets_http_only_cookie(client, access_code):
-    response = client.post(
-        "/access/redeem",
-        data={"course_slug": "fixture-course", "code": access_code},
-    )
+def test_free_preview_chapter_is_public(client):
+    response = client.get("/courses/fixture-course/chapters/1")
+    assert response.status_code == 200 and "第一章" in response.text
 
-    assert response.status_code == 303
-    assert "/learn/fixture-course" in response.headers["location"]
+
+def test_redeem_result_sets_http_only_cookie(client, access_code):
+    response = redeem(client, access_code)
+    assert response.status_code == 200
+    assert "/learn/fixture-course" in response.text
     assert "HttpOnly" in response.headers["set-cookie"]
+    assert "SameSite=lax" in response.headers["set-cookie"]
+    assert "Path=/" in response.headers["set-cookie"]
+    assert "course_session_fixture-course" in response.headers["set-cookie"]
 
 
 def test_authorized_user_can_open_chapter_and_save_progress(client, access_code):
-    client.post(
-        "/access/redeem",
-        data={"course_slug": "fixture-course", "code": access_code},
-    )
-
+    redeem(client, access_code)
     page = client.get("/learn/fixture-course/chapters/1")
-    saved = client.post(
-        "/api/progress",
-        json={"course_slug": "fixture-course", "chapter_number": 1, "completed": True},
-    )
+    saved = client.post("/api/progress", json=dict(course_slug="fixture-course", chapter_number=1,
+        completed=True, csrf_token=client.cookies.get("course_csrf_fixture-course")),
+        headers={"Origin": "http://testserver", "X-CSRF-Token": client.cookies.get("course_csrf_fixture-course")})
+    assert page.status_code == 200 and saved.status_code == 204
 
-    assert page.status_code == 200
-    assert saved.status_code == 204
+
+def test_generated_relative_chapter_links_remain_usable(client, access_code):
+    redeem(client, access_code)
+    chapter = client.get("/learn/fixture-course/chapters/01.html")
+    index = client.get("/learn/fixture-course/chapters/index.html")
+    assert chapter.status_code == 200 and "第一章" in chapter.text
+    assert index.status_code == 303 and index.headers["location"] == "/learn/fixture-course"
+
+
+def test_progress_requires_a_real_json_boolean(client, access_code):
+    redeem(client, access_code)
+    response = client.post("/api/progress", json=dict(course_slug="fixture-course", chapter_number=1,
+        completed="false", csrf_token=client.cookies.get("course_csrf_fixture-course")),
+        headers={"Origin": "http://testserver", "X-CSRF-Token": client.cookies.get("course_csrf_fixture-course")})
+    assert response.status_code == 400
+
+
+def test_security_headers_are_set(client):
+    response = client.get("/courses/fixture-course")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "script-src 'none'" in response.headers["content-security-policy"]

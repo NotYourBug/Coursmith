@@ -15,13 +15,33 @@ dependencies = [
   "python-dotenv>=1.0,<2",
   "uvicorn[standard]>=0.34,<1",
   "playwright>=1.50,<2",
+  "openai>=1.60,<3",
+  "selenium>=4.27,<5",
+  "tinycss2>=1.4,<2",
+  "pwdlib[argon2]>=0.2,<1",
+  "tzdata>=2026.1",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9", "pytest-cov>=6,<7"]
+dev = ["pytest>=8,<9", "pytest-cov>=6,<7", "ruff>=0.11,<1", "httpx2>=2,<3", "build>=1.6,<2", "cryptography>=46,<50"]
+feishu = ["lark-oapi>=1.4,<2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "browser: mandatory real browser delivery acceptance (missing browser is an error)",
+  "packaging: mandatory fresh installed wheel acceptance",
+]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# Start with release-blocking checks; expand this set while modernizing the legacy generator.
+select = ["E9", "F63", "F7", "F82"]
 
 [tool.setuptools.packages.find]
 include = ["course_platform*"]
+
+[tool.setuptools.package-data]
+course_platform = ["templates/**/*.html", "static/**/*"]

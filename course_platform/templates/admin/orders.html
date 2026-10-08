@@ -1,0 +1,18 @@
+{% extends "admin/base.html" %}
+{% block title %}店铺订单 · 智课工坊{% endblock %}
+{% block content %}
+<h1>店铺订单</h1><p><a href="/admin/orders/new">登记已核验付款订单</a></p>
+<form method="get" action="/admin/orders">
+<label>渠道 <input name="channel" value="{{ filters.channel }}" maxlength="200"></label>
+<label>店铺 <input name="shop_id" value="{{ filters.shop_id }}" maxlength="200"></label>
+<label>状态 <select name="status"><option value="">全部</option>{% for value, label in [('recorded','已登记'),('code_ready','待发货'),('delivered','已发货'),('activated','已激活'),('refunded','已退款')] %}<option value="{{ value }}"{% if filters.status == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+<button type="submit">查询</button></form>
+<form method="post" action="/admin/orders/search"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>外部订单号精确查询 <input name="external_order_id" value="{{ external_search|default('') }}" required maxlength="300" autocomplete="off"></label><button type="submit">私密查询</button></form>
+<p>共 {{ total }} 项，每页 20 项；外部订单号仅在授权详情显示。</p>
+<div class="table-wrap"><table><thead><tr><th>订单</th><th>渠道 / 店铺</th><th>金额（人民币分）</th><th>付款时间</th><th>状态</th></tr></thead><tbody>
+{% for order in orders %}<tr><td><a href="/admin/orders/{{ order.id }}">{{ order.id }}</a></td><td>{{ order.channel }} / {{ order.shop_id }}</td><td>{{ order.amount_cents }}</td><td>{{ display_time(order.paid_at) }}</td><td>{{ '已退款' if order.status == 'refunded' else {'recorded':'已登记','code_ready':'待人工确认已在店铺发送','delivered':'已发货','activated':'已激活'}.get(order.delivery_state,'待核验') }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% if external_search %}
+{% for number, label in [(previous,'上一页'),(next_page,'下一页')] %}{% if number %}<form method="post" action="/admin/orders/search"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="external_order_id" value="{{ external_search }}"><input type="hidden" name="page" value="{{ number }}">{% for key, value in filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}<button type="submit">{{ label }}</button></form>{% endif %}{% endfor %}
+{% else %}{% if previous %}<a href="{{ previous }}">上一页</a>{% endif %} {% if next_page %}<a href="{{ next_page }}">下一页</a>{% endif %}{% endif %}
+{% endblock %}

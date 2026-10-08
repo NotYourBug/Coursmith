@@ -1,0 +1,11 @@
+{% extends "admin/base.html" %}
+{% block title %}管理员登录 · 智课工坊{% endblock %}
+{% block content %}
+<h1>管理员登录</h1>
+<form action="/admin/login" method="post" class="account-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label for="username">账号</label><input id="username" name="username" value="{{ username }}" maxlength="128" autocomplete="username" required>
+  <label for="password">密码</label><input id="password" type="password" name="password" maxlength="128" autocomplete="current-password" required>
+  <button type="submit">登录</button>
+</form>
+{% endblock %}

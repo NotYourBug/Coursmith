@@ -6,8 +6,8 @@
 
 前提条件：
 1. 在飞书开发者后台创建企业自建应用，开启"机器人"能力
-2. 在 config.json 中配置 feishu_app_id，feishu_app_secret，
-   feishu_encrypt_key，feishu_verification_token
+2. 在本机 .env 中配置 FEISHU_APP_ID、FEISHU_APP_SECRET、
+   FEISHU_ENCRYPT_KEY、FEISHU_VERIFICATION_TOKEN
 3. pip install lark-oapi>=1.6.0
 """
 
@@ -18,7 +18,7 @@ import threading
 import sys
 
 from course_gen_core import (
-    load_config, get_config,
+    load_config,
     run_full_pipeline_for_titles,
     check_and_clean_incomplete_courses, run_post_pipeline,
     sanitize_filename,
@@ -76,8 +76,6 @@ def process_feishu_request(lessons, topics, footer_text, thread_num):
             continue
         topic_dir = os.path.join(input_dir, sanitize_filename(topic_name))
         os.makedirs(topic_dir, exist_ok=True)
-        original_cwd = os.getcwd()
-        os.chdir(topic_dir)
         try:
             print(f"\n===== 主题: {topic_name} ({len(course_titles)}门课, 每门{lessons}节) =====")
             run_full_pipeline_for_titles(
@@ -87,29 +85,23 @@ def process_feishu_request(lessons, topics, footer_text, thread_num):
                 thread_num=thread_num,
                 do_png=False,
                 do_zip=False,
+                output_dir=topic_dir,
             )
             results[topic_name] = {"status": "ok", "count": len(course_titles)}
         except Exception as e:
             print(f"主题 {topic_name} 处理失败: {e}")
             results[topic_name] = {"status": "error", "error": str(e)}
-        finally:
-            os.chdir(original_cwd)
 
     print("\n===== 完整性检查 =====")
-    passed, deleted = check_and_clean_incomplete_courses(input_dir, lessons)
+    passed, failed = check_and_clean_incomplete_courses(input_dir, lessons)
 
     print("\n===== 后处理（ZIP + PNG）=====")
     for topic_name in topics:
         topic_dir = os.path.join(input_dir, sanitize_filename(topic_name))
         if os.path.isdir(topic_dir):
-            original_cwd = os.getcwd()
-            os.chdir(topic_dir)
-            try:
-                run_post_pipeline(None, do_png=True, do_zip=True, png_workers=10)
-            finally:
-                os.chdir(original_cwd)
+            run_post_pipeline(topic_dir, do_png=True, do_zip=True, png_workers=10)
 
-    return results, passed, deleted
+    return results, passed, failed
 
 
 def _send_reply(api_client, sender_id, text):
@@ -127,22 +119,13 @@ def _send_reply(api_client, sender_id, text):
         print(f"发送回复失败: {e}")
 
 
-def _read_cfg_str(key, default=""):
-    try:
-        with open("config.json", 'r', encoding='utf-8') as f:
-            return json.load(f).get(key, default)
-    except Exception:
-        return default
-
-
 def run_feishu_bot():
     """启动飞书机器人 WebSocket 长连接。"""
     load_config()
-    cfg = get_config()
-    app_id = cfg.get("feishu_app_id", "")
-    app_secret = cfg.get("feishu_app_secret", "")
-    encrypt_key = _read_cfg_str("feishu_encrypt_key", "")
-    verification_token = _read_cfg_str("feishu_verification_token", "")
+    app_id = os.environ.get("FEISHU_APP_ID", "").strip()
+    app_secret = os.environ.get("FEISHU_APP_SECRET", "").strip()
+    encrypt_key = os.environ.get("FEISHU_ENCRYPT_KEY", "").strip()
+    verification_token = os.environ.get("FEISHU_VERIFICATION_TOKEN", "").strip()
 
     if not app_id or not app_secret:
         print("=" * 60)
@@ -150,9 +133,9 @@ def run_feishu_bot():
         print("1. 访问 https://open.feishu.cn/ 创建企业自建应用")
         print("2. 在应用功能中开启「机器人」能力")
         print("3. 获取 App ID 和 App Secret")
-        print("4. 在 config.json 中填写 feishu_app_id 和 feishu_app_secret")
+        print("4. 在本机 .env 中填写 FEISHU_APP_ID 和 FEISHU_APP_SECRET")
         print("5. 在事件订阅页面获取 Encrypt Key 和 Verification Token")
-        print("6. 在 config.json 中填写 feishu_encrypt_key 和 feishu_verification_token")
+        print("6. 在本机 .env 中填写 FEISHU_ENCRYPT_KEY 和 FEISHU_VERIFICATION_TOKEN")
         print("7. 重新运行 python feishu_bot.py")
         print("=" * 60)
         return
@@ -161,7 +144,7 @@ def run_feishu_bot():
         print("=" * 60)
         print("飞书事件订阅未配置！")
         print("请在 Feishu 应用的事件订阅页面获取 Encrypt Key 和 Verification Token")
-        print("然后在 config.json 中填写 feishu_encrypt_key 和 feishu_verification_token")
+        print("然后在本机 .env 中填写 FEISHU_ENCRYPT_KEY 和 FEISHU_VERIFICATION_TOKEN")
         print("=" * 60)
         return
 

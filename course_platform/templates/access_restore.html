@@ -1,0 +1,3 @@
+{% extends "base.html" %}
+{% block content %}<section class="narrow-form"><h1>恢复学习设备</h1><p>重新输入学习凭证，进度与原权益期限保持一致。</p>{% if error %}<p role="alert">{{ error }} · {{ request_id }}</p>{% endif %}{% if confirm %}<p>已有三个有效设备。请重新输入凭证，并确认退出最早设备。</p>{% endif %}
+<form method="post" action="/access/restore"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="credential">学习凭证</label><input id="credential" name="credential" autocomplete="off" required placeholder="LK-...">{% if confirm %}<label><input type="checkbox" name="confirm">确认退出最早设备</label>{% endif %}<button class="button">恢复访问</button></form><a href="/help">联系店铺售后</a></section>{% endblock %}

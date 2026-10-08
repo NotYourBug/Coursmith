@@ -10,27 +10,23 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
+from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
-_REMOTE_RE = re.compile(r"(?:https?:)?//", re.IGNORECASE)
-_SCRIPT_SRC_RE = re.compile(r"<script\b[^>]*\bsrc\s*=\s*['\"]([^'\"]+)", re.I)
-_STYLESHEET_RE = re.compile(
-    r"<link\b[^>]*\b(?:href\s*=\s*['\"]([^'\"]+)['\"][^>]*\brel\s*=\s*['\"]stylesheet|"
-    r"rel\s*=\s*['\"]stylesheet['\"][^>]*\bhref\s*=\s*['\"]([^'\"]+))",
-    re.I,
-)
-_IMAGE_SRC_RE = re.compile(r"<img\b[^>]*\bsrc\s*=\s*['\"]([^'\"]+)", re.I)
 
 
 def _safe_relative_path(value: str) -> str:
+    value = unquote(value, errors="strict")
     if not value or "\x00" in value:
         raise ValueError("path must be a non-empty relative path")
-    if "\\" in value:
+    if "\\" in value or ":" in value or "%" in value or "?" in value or "#" in value:
         raise ValueError("path must use forward slashes")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("path must not contain control characters")
     path = PurePosixPath(value)
     if path.is_absolute() or ".." in path.parts or "." in path.parts:
         raise ValueError(f"unsafe relative path: {value}")
@@ -118,6 +114,13 @@ class CourseManifest(BaseModel):
             raise ValueError("chapter numbers must be unique")
         if not set(self.free_chapters).issubset(numbers):
             raise ValueError("free_chapters must reference existing chapters")
+        preview_numbers = {
+            chapter.number for chapter in self.chapters if chapter.free_preview
+        }
+        if set(self.free_chapters) != preview_numbers:
+            raise ValueError(
+                "free_chapters must exactly match chapters marked free_preview"
+            )
         if self.contains_ai_generated_content and not self.ai_disclosure.strip():
             raise ValueError("ai_disclosure is required when AI content is present")
         return self
@@ -164,69 +167,49 @@ def load_course_package(path: Path) -> CoursePackage:
     return CoursePackage(manifest=manifest, root=root, chapter_files=chapter_files)
 
 
-def _check_external_resources(file_path: Path, text: str) -> list[str]:
-    errors: list[str] = []
-    for value in _SCRIPT_SRC_RE.findall(text):
-        if _REMOTE_RE.search(value):
-            errors.append(f"{file_path.name}: external script is not allowed: {value}")
-    for match in _STYLESHEET_RE.findall(text):
-        value = next((item for item in match if item), "")
-        if _REMOTE_RE.search(value):
-            errors.append(f"{file_path.name}: external stylesheet is not allowed: {value}")
-    for value in _IMAGE_SRC_RE.findall(text):
-        if _REMOTE_RE.search(value):
-            errors.append(f"{file_path.name}: external image is not allowed: {value}")
-    return errors
-
-
-def _check_html(file_path: Path) -> list[str]:
-    try:
-        text = file_path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return [f"{file_path.name}: HTML must be UTF-8"]
-    errors = []
-    lowered = text.lower()
-    for marker in ("<!doctype html", "<html", "<head", "<body"):
-        if marker not in lowered:
-            errors.append(f"{file_path.name}: missing HTML marker {marker}")
-    errors.extend(_check_external_resources(file_path, text))
-    return errors
+def _optional_files(root: Path, directory: str) -> list[Path]:
+    optional_root = root / directory
+    if not optional_root.exists():
+        return []
+    if optional_root.is_symlink() or not optional_root.is_dir():
+        raise ValueError(f"{directory} must be a real directory inside the package")
+    files: list[Path] = []
+    resolved_root = root.resolve()
+    for candidate in optional_root.rglob("*"):
+        if candidate.is_symlink():
+            raise ValueError(f"symbolic links are not allowed: {candidate.relative_to(root)}")
+        resolved = candidate.resolve()
+        if resolved_root not in resolved.parents:
+            raise ValueError(f"path escapes package root: {candidate.relative_to(root)}")
+        if candidate.is_file():
+            files.append(candidate)
+    return files
 
 
 def validate_course_package(path: Path) -> ValidationReport:
-    root = Path(path).resolve()
-    errors: list[str] = []
-    warnings: list[str] = []
+    # Import lazily: snapshot inspection uses the manifest models above.
+    from .content_inspection import (
+        _confirm_snapshot,
+        _package_root,
+        _read_snapshot,
+        _validate_snapshot,
+    )
+
     try:
-        package = load_course_package(root)
-    except Exception as exc:
+        root = _package_root(path)
+        files, inventory = _read_snapshot(root)
+        manifest, _ = _validate_snapshot(files)
+        _confirm_snapshot(root, files, inventory)
+    except (ValueError, OSError, RecursionError) as exc:
         return ValidationReport(ok=False, errors=[str(exc)], warnings=[])
-
-    manifest = package.manifest
-    required = ["index.html", manifest.source_manifest, manifest.license_file]
-    for relative in required:
-        candidate = _resolved_child(root, relative)
-        if not candidate.is_file():
-            errors.append(f"required file is missing: {relative}")
-
-    for chapter, chapter_file in zip(manifest.chapters, package.chapter_files):
-        if not chapter_file.is_file():
-            errors.append(f"chapters/{chapter.number:02d}.html is missing: {chapter.path}")
-        else:
-            errors.extend(_check_html(chapter_file))
-
-    index_file = root / "index.html"
-    if index_file.is_file():
-        errors.extend(_check_html(index_file))
+    warnings: list[str] = []
     if manifest.status == "published" and not manifest.free_chapters:
         warnings.append("published course has no free preview chapter")
-    return ValidationReport(ok=not errors, errors=errors, warnings=warnings)
+    return ValidationReport(ok=True, errors=[], warnings=warnings)
 
 
 def _copy_if_present(source: Path, target: Path) -> None:
-    if source.is_dir():
-        shutil.copytree(source, target)
-    elif source.is_file():
+    if source.is_file():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 
@@ -255,12 +238,20 @@ def publish_course(
         raise FileExistsError(f"course slug already exists: {manifest.slug}")
     temporary = Path(tempfile.mkdtemp(prefix=f".{manifest.slug}.", dir=content_root))
     try:
-        for relative in ("manifest.json", "index.html", manifest.source_manifest, manifest.license_file):
+        for relative in (
+            "manifest.json",
+            "index.html",
+            manifest.source_manifest,
+            manifest.license_file,
+            "CHANGELOG.md",
+        ):
             _copy_if_present(source_dir / relative, temporary / relative)
         for chapter in manifest.chapters:
             _copy_if_present(source_dir / chapter.path, temporary / chapter.path)
         for optional_dir in ("assets", "downloads"):
-            _copy_if_present(source_dir / optional_dir, temporary / optional_dir)
+            for source in _optional_files(source_dir, optional_dir):
+                relative = source.relative_to(source_dir)
+                _copy_if_present(source, temporary / relative)
         os.replace(temporary, target)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)

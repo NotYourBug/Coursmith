@@ -1,0 +1,20 @@
+{% extends "admin/base.html" %}
+{% block title %}订单 {{ order.id }} · 智课工坊{% endblock %}
+{% block content %}
+<h1>订单 {{ order.id }} · {{ {'recorded':'已登记','code_ready':'待人工确认已在店铺发送','delivered':'已发货','activated':'已激活','refunded':'已退款'}.get(order.status,'待核验') }}</h1>
+<p>渠道：{{ order.data.channel }} / 店铺：{{ order.data.shop_id }} / 外部订单号：{{ order.data.external_order_id }}</p>
+<p>实付：{{ order.data.paid_cents }} 人民币分；付款：{{ display_time(order.data.paid_at) }}；确认发货：{{ display_time(times.delivered_at) }}</p>
+<p>登记商品：{{ policy.title }}；发行版本：{{ policy.version }}；学习期限：{% if policy.access.access_days is none %}无固定到期日{% else %}激活后 {{ policy.access.access_days }} 天{% endif %}，仅当前版本。</p>
+<p>格式：{% if policy.access.online %}在线 {% endif %}{% if policy.access.pdf %}PDF {% endif %}{% if policy.access.zip %}ZIP{% endif %}；售后：{{ policy.support_text }}</p>
+<p>备注：{{ order.data.note }}</p>
+{% if order.status == 'refunded' %}<p>已核验外部退款：{{ display_time(times.refunded_at) }}；原因：{{ times.refund_reason }}</p>{% else %}
+{% if order.status == 'recorded' %}<form method="post" action="/admin/orders/{{ order.id }}/issue"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ order.revision }}"><input type="hidden" name="idempotency_key" value="{{ idempotency_key }}"><button type="submit">按登记政策发码</button></form>
+<form method="post" action="/admin/orders/{{ order.id }}/attach-code"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ order.revision }}"><input type="hidden" name="idempotency_key" value="{{ idempotency_key }}"><label>已有码公开编号（CODE-，不输入原码）<input name="public_code_id" required></label><label>核验依据 <textarea name="verification_reason" required maxlength="1000"></textarea></label><label><input type="checkbox" name="confirm" required> 已核验该码与订单、原商品和政策关联</label><button type="submit">补关联已有码</button></form>{% endif %}
+{% if order.status in ['code_ready','activated'] and not times.delivered_at %}<form method="post" action="/admin/orders/{{ order.id }}/confirm-delivery"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ order.revision }}"><input type="hidden" name="idempotency_key" value="{{ idempotency_key }}"><label><input type="checkbox" name="confirm" required> 确认已在店铺发送</label><button type="submit">确认发货</button></form>{% endif %}
+<form method="post" action="/admin/orders/{{ order.id }}/refund"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ order.revision }}"><input type="hidden" name="idempotency_key" value="{{ idempotency_key }}"><label>外部退款核验原因 <textarea name="reason" required maxlength="1000"></textarea></label><label><input type="checkbox" name="confirm" required> 已在店铺确认退款完成；撤销本订单码链、权益、凭证和会话</label><button type="submit">记录外部已退款</button><p>此操作记录核验结果，不调用店铺退款接口。</p></form>
+{% endif %}
+<h2>码链与权益</h2><p>共 {{ total }} 个码，每页 20 项。原码仅首次发货响应显示。</p>
+<div class="table-wrap"><table><thead><tr><th>公开编号 / 批次</th><th>激活截止</th><th>码状态</th><th>权益</th></tr></thead><tbody>{% for code in codes %}<tr><td>{{ code.code_number }} <a href="/admin/code-batches/{{ code.batch_id }}">批次 {{ code.batch_id }}</a></td><td>{{ display_time(code.expires_at) }}</td><td>{{ '已使用' if code.used_at else ('已作废' if code.voided_at else '未使用') }}</td><td>{% if code.entitlement_id %}<a href="/admin/entitlements/{{ code.entitlement_id }}">权益 {{ code.entitlement_id }}</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+{% if previous %}<a href="{{ previous }}">上一页</a>{% endif %} {% if next_page %}<a href="{{ next_page }}">下一页</a>{% endif %}
+<p><a href="/admin/orders">订单列表</a></p>
+{% endblock %}

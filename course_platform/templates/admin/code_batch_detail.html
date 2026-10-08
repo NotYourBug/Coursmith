@@ -1,0 +1,26 @@
+{% extends "admin/base.html" %}
+{% block title %}批次 {{ batch.id }} · 智课工坊{% endblock %}
+{% block content %}
+<h1>批次 {{ batch.id }}</h1>
+<p>商品编号 {{ batch.product_id }} · 数量 {{ batch.quantity }} · 用途 {{ batch.purpose }} · 修订 {{ batch.revision }}</p>
+<p>创建：{{ display_time(batch.created_at) }} · 激活有效期 {{ batch.activation_days }} 天</p>
+<p>备注：{{ batch.notes }}</p>
+<p>明文丢失不可找回。补发仅作废当前未使用项并继承原发行承诺；已兑换权益保持有效。商品暂停或可售检查失效时，请先处理可售检查。</p>
+{% for operation, text in [('revoke-unused','作废全部未使用码'), ('replace-unused','补发全部未使用码')] %}
+<form action="/admin/code-batches/{{ batch.id }}/{{ operation }}" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ batch.revision }}">
+<input type="hidden" name="idempotency_key" value="{{ idempotency_key }}-batch">
+<label>原因<input name="reason" required maxlength="1000"></label><button type="submit">{{ text }}</button>
+</form>{% endfor %}
+<div class="table-wrap"><table><thead><tr><th>公开编号</th><th>激活截止</th><th>状态</th><th>替代原码 ID</th><th>操作</th></tr></thead><tbody>
+{% for code in codes %}<tr><td>{{ code.code_number or '历史未编号' }}</td><td>{{ display_time(code.expires_at) }}</td><td>{% if code.used_at %}已兑换{% elif code.voided_at %}已作废{% else %}未使用{% endif %}</td><td>{{ code.replaces_code_id or '—' }}</td><td>
+{% if code.entitlement_id and request.app.state.recovery_service is defined %}<a href="/admin/entitlements/{{ code.entitlement_id }}">权益详情及凭证售后</a>{% endif %}
+{% if not code.used_at and not code.voided_at %}{% for operation, text in [('revoke','作废'), ('replace','补发')] %}
+<form action="/admin/codes/{{ code.id }}/{{ operation }}" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ code.revision }}">
+<input type="hidden" name="idempotency_key" value="{{ idempotency_key }}-{{ code.id }}">
+<label>原因<input name="reason" required maxlength="1000"></label><button type="submit">{{ text }}</button>
+</form>{% endfor %}{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
+{% if previous %}<a href="{{ previous }}">上一页</a>{% endif %} {% if next_page %}<a href="{{ next_page }}">下一页</a>{% endif %}
+{% endblock %}

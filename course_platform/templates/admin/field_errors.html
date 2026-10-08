@@ -1,0 +1,1 @@
+{% if field_errors %}<ul role="alert">{% for field, message in field_errors.items() %}<li data-field-error="{{ field }}">{{ field }}：{{ message }}</li>{% endfor %}</ul>{% endif %}

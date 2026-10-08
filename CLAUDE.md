@@ -52,7 +52,7 @@ pip install openai selenium webdriver-manager lark-oapi
 
 ## Configuration
 
-`config.json` stores: `base_url` (DeepSeek API endpoint), `api_key`, `browser_path` (chromedriver), `lessons_per_course` (default 30), and Feishu credentials. Prompt template versioning auto-updates the config when the built-in version is newer.
+`config.json` stores non-secret compatibility settings such as `base_url`, `browser_path`, and `lessons_per_course`. DeepSeek and Feishu credentials must be supplied through the local `.env` file or process environment and must never be committed. Prompt template versioning auto-updates the config when the built-in version is newer.
 
 ## Key Technical Details
 

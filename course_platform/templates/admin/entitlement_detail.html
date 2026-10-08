@@ -1,0 +1,37 @@
+{% extends "admin/base.html" %}
+{% block title %}权益 {{ entitlement.id }} · 智课工坊{% endblock %}
+{% block content %}
+<h1>权益 {{ entitlement.id }} · 凭证售后</h1>
+<p>课程 {{ entitlement.course_id }} · 版本 {{ entitlement.course_version }} · 用途 {{ entitlement.purpose or '历史未知' }} · 修订 {{ entitlement.revision }}</p>
+<p>创建：{{ display_time(entitlement.created_at) }} · 原到期：{{ display_time(entitlement.expires_at) }}{% if not entitlement.expires_at %}（{{ '无固定到期日' if entitlement.policy and entitlement.policy.access_mode == 'no_fixed_expiry' else '待核验' }}）{% endif %}</p>
+<p>有效设备：{{ entitlement.active_sessions }} / 3 · 撤销：{{ display_time(entitlement.revoked_at) }}</p>
+<section><h2>原发行政策</h2>
+{% if entitlement.policy %}<p>{{ entitlement.policy.title }} · {{ entitlement.policy.access_days or '无固定到期日' }}{% if entitlement.policy.access_days %} 天{% endif %} · {{ entitlement.policy.update_policy }}</p>
+<p>在线：{{ '允许' if entitlement.policy.online else '不允许' }} · PDF：{{ '允许' if entitlement.policy.pdf else '不允许' }} · ZIP：{{ '允许' if entitlement.policy.zip else '不允许' }}</p><p>{{ entitlement.policy.support_text }}</p>
+{% else %}<p>原发行政策待核验。不能据当前商品生成政策或重置凭证。</p>{% endif %}</section>
+<section><h2>核验来源</h2><p>来源码编号：{{ entitlement.source_code_id or '—' }} · 关联订单编号：{{ entitlement.order_id or '—' }}</p>
+<p>核验：{{ display_time(entitlement.verified_at) }} · 核验经营者：{{ entitlement.verified_by or '—' }}</p><p>{{ entitlement.verified_reason or '尚无购买核验记录' }}</p>
+<p>销售权益须有已记录的购买核验及对应已付款订单；测试或赠送须核对实际发行用途并人工确认。历史未知权益先补录核验。</p></section>
+<section><h2>学习进度</h2>{% for progress in entitlement.progress %}<p>第 {{ progress.chapter_number }} 章：{{ '已完成' if progress.completed else '未完成' }} · {{ display_time(progress.updated_at) }}</p>{% else %}<p>暂无进度记录。</p>{% endfor %}</section>
+{% if request.app.state.legacy_service is defined and entitlement.legacy_state in ('pending_verification', 'resolved_code') %}
+<section><h2>核验历史持有人</h2><p>仅核验当前权益 {{ entitlement.id }}，不合并同课程记录。原截止：{{ display_time(entitlement.expires_at) }}{% if not entitlement.expires_at %}（未知，不能自动认作无固定到期日）{% endif %}。核验不生成学习凭证；完成后请单独重置。</p>
+<form class="product-form" action="/admin/entitlements/{{ entitlement.id }}/verify-legacy" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ entitlement.revision }}"><input type="hidden" name="idempotency_key" value="{{ idempotency_key }}-verify">
+<label>核验用途<select name="purpose" required><option value="">请选择</option><option value="sale">销售（须选已核验付款订单）</option><option value="test">测试</option><option value="gift">赠送</option></select></label>
+<label>明确关联已有已核验订单编号（销售必填，测试/赠送留空）<input type="number" name="order_id" min="1"></label>
+{% include "admin/legacy_policy_fields.html" %}
+<label>新截止（有期限须显式 ISO8601 含时区；无固定到期日留空）<input type="text" name="expires_at" placeholder="2026-10-09T08:00:00+08:00"></label>
+<label>原持有人及核验依据<textarea name="verification_reason" required maxlength="1000"></textarea></label>
+<label class="check"><input type="checkbox" name="confirm" required>确认当前权益原持有人、用途、所选订单、政策及原/新截止；明确确认任何延期</label><button type="submit">确认核验当前历史权益</button></form></section>
+{% endif %}
+<section><h2>重置学习凭证</h2><p>原学习凭证及全部旧设备会话立即失效。进度及原期限保留，新凭证仅本次成功响应展示。</p>
+<form class="product-form" action="/admin/entitlements/{{ entitlement.id }}/reset-credential" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ entitlement.revision }}"><input type="hidden" name="idempotency_key" value="{{ idempotency_key }}-reset">
+<label>核验依据及原因<textarea name="reason" required maxlength="1000"></textarea></label>
+<label class="check"><input type="checkbox" name="confirm" required>我已核对购买记录或实际测试/赠送发行用途，并人工确认持有人及全部旧会话失效的影响</label><button type="submit">确认重置凭证</button></form></section>
+<section><h2>撤销权益</h2><p>撤销将立即停止该权益访问，并撤销全部凭证和设备会话；保留期限及进度记录。</p>
+<form class="product-form" action="/admin/entitlements/{{ entitlement.id }}/revoke" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ entitlement.revision }}"><input type="hidden" name="idempotency_key" value="{{ idempotency_key }}-revoke">
+<label>核验依据及原因<textarea name="reason" required maxlength="1000"></textarea></label>
+<label class="check"><input type="checkbox" name="confirm" required>确认停止该权益访问及全部会话</label><button type="submit">确认撤销权益</button></form></section>
+{% endblock %}

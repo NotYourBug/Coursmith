@@ -1,0 +1,5 @@
+# Original six-table producer (test-only)
+
+`tests/frozen_original_access.py` freezes `course_platform/access.py` from approved BASE db6caa5e90882e497e887715141ca74c42498394, whose original checkout-file SHA256 was 97DA7C49FBB63917FE2AFE2900C1C58BC0EA6D091CECF00BC46EBD2C93FCD7FB (CRLF checkout). Only its relative database import is rewritten to an absolute import to run outside the installed package. No mint/redemption/session/progress algorithm is changed. Original short token generation, hashes, UTC expiry, independent session progress and events remain real historical producers. Controlled test clock replaces this artifact's utc_now only.
+
+This artifact ships only under tests, outside setuptools' course_platform* package selection. It is never imported by production. It does not authorize current buyers or expose a live package API. Historical initialize_database retains the exact six-table SQL baseline; migration preserves and validates its output before genuine owner resolution/verification. Production AccessService delegates modern domain services and requires authenticated owner issuance.

@@ -1,0 +1,23 @@
+{% extends "admin/product_form.html" %}
+{% block title %}{{ data.title }} · 商品详情{% endblock %}
+{% block content %}
+<h1>{{ data.title }}</h1><p>状态：{{ product.status }} · 修订：{{ product.revision }}</p>
+<section aria-label="销售检查">
+  <h2>可售检查</h2>
+  {% if readiness_error %}<p role="status" class="error">{{ readiness_error.message }}</p>{% else %}<p role="status">销售检查有效，可新发码。</p>{% endif %}
+  <p>领取期限是激活码允许兑换的时间；学习期限从兑换后开始计算，两者独立。</p>
+  {% if data.policy %}<p>学习期限：{{ (data.policy.access_days|string + ' 天') if data.policy.access_mode == 'days' else '无固定到期日' }}。格式：{{ '在线 ' if data.policy.online else '' }}{{ 'PDF ' if data.policy.pdf else '' }}{{ 'ZIP' if data.policy.zip else '' }}。更新政策：仅当前版本。</p>{% else %}<p>学习期限和交付格式尚未选择。</p>{% endif %}
+  <p>暂停或归档只阻止新发码，既有激活码和有效权益仍使用其原始快照。</p>
+  {% for channel in data.channels %}<p><a href="{{ channel.url }}" rel="noreferrer">{{ channel.name }}</a></p>{% endfor %}
+  {% if product.status != 'archived' %}
+  <form method="post" action="/admin/products/{{ product.id }}/activate" class="product-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ product.revision }}">
+    {% for key, label in [('quality','质量已检查'),('sources','来源及授权已检查'),('ai','AI 披露已确认'),('mobile','移动端阅读已检查'),('downloads','所承诺下载已检查')] %}<label class="check"><input type="checkbox" name="{{ key }}" required>{{ label }}</label>{% endfor %}
+    <button type="submit">重新检查并启用</button>
+  </form>
+  {% if product.status == 'active' %}<form method="post" action="/admin/products/{{ product.id }}/pause"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ product.revision }}"><button type="submit">暂停销售</button></form>{% endif %}
+  <form method="post" action="/admin/products/{{ product.id }}/archive"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ product.revision }}"><button type="submit">归档商品</button></form>
+  {% endif %}
+</section>
+{{ super() }}
+{% endblock %}

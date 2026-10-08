@@ -1,0 +1,17 @@
+{% extends "admin/base.html" %}
+{% block title %}新建发码批次 · 智课工坊{% endblock %}
+{% block content %}
+<h1>新建发码批次</h1>
+<p>仅通过可售检查的在售商品可发码。学习期从兑换日起计算；发码不会创建学习权益。</p>
+<p>明文仅本次响应显示，请立即复制或下载 CSV。丢失不可找回。</p>
+<form action="/admin/code-batches/new" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+<label>商品<select name="product_id" required>{% for product in products %}<option value="{{ product.id }}">{{ product.title }}（{{ product.id }}）</option>{% endfor %}</select></label>
+<label>数量<input name="count" type="number" min="1" max="200" value="1" required></label>
+<label>用途<select name="purpose"><option value="sale">销售</option><option value="test">测试</option><option value="gift">赠送</option></select></label>
+<label>激活有效期（天）<input name="activation_days" type="number" min="1" max="365" value="30" required></label>
+<label>备注<textarea name="note" maxlength="1000"></textarea></label>
+<button type="submit"{% if not products %} disabled{% endif %}>生成并一次性显示</button>
+</form>
+{% endblock %}

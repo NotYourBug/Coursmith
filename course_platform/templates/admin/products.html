@@ -1,0 +1,14 @@
+{% extends "admin/base.html" %}
+{% block title %}商品管理 · 智课工坊{% endblock %}
+{% block content %}
+<h1>商品管理</h1><p><a href="/admin/products/new">新建商品</a> · <a href="/admin/categories">管理分类</a></p>
+<form method="get" class="filters">
+  <label>标题 <input name="title" value="{{ title_filter }}"></label>
+  <label>状态 <select name="status"><option value="">全部</option>{% for value in ['draft','active','paused','archived'] %}<option value="{{ value }}" {% if value == status_filter %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+  <label>分类 <select name="category_id"><option value="">全部</option>{% for category in categories %}<option value="{{ category.id }}" {% if category.id == category_id %}selected{% endif %}>{{ category.name }}</option>{% endfor %}</select></label>
+  <button type="submit">筛选</button>
+</form>
+<p>共 {{ total }} 项，第 {{ page }} 页，每页 20 项。</p>
+<ul class="product-list">{% for product in products %}<li><a href="/admin/products/{{ product.id }}">{{ product.data.title }}</a> <span>{{ product.status }}</span></li>{% else %}<li>暂无商品。</li>{% endfor %}</ul>
+<nav aria-label="商品分页">{% if previous %}<a href="{{ previous }}">上一页</a>{% endif %}{% if next_page %}<a href="{{ next_page }}">下一页</a>{% endif %}</nav>
+{% endblock %}

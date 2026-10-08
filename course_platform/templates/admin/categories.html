@@ -1,0 +1,35 @@
+{% extends "admin/base.html" %}
+{% block title %}分类管理 · 智课工坊{% endblock %}
+{% block content %}
+<h1>分类管理</h1><p>分类改名不改变课程身份或路径。已引用分类保留，可停用。</p>
+{% include "admin/field_errors.html" %}
+{% if category_recovery is defined %}
+<h2>修正分类输入</h2><form method="post" action="/admin/categories{{ '/' ~ recovery_id if recovery_id else '' }}" class="product-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+{% if recovery_id %}<input type="hidden" name="revision" value="{{ form_revision }}">{% endif %}
+<label>Slug <input name="slug" value="{{ category_recovery.slug }}" required maxlength="100"></label>
+<label>名称 <input name="name" value="{{ category_recovery.name }}" required maxlength="200"></label>
+<label>排序 <input name="sort_order" value="{{ category_recovery.sort_order }}" required></label>
+<label><input type="checkbox" name="enabled" {% if category_recovery.enabled == 'on' %}checked{% endif %}>启用</label><button type="submit">保存分类</button></form>
+{% endif %}
+<p>共 {{ total }} 项，第 {{ page }} 页，每页 20 项。</p>
+<h2>新建分类</h2>
+<form method="post" action="/admin/categories" class="product-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Slug（小写字母、数字、单连字符） <input name="slug" pattern="[a-z0-9]+(-[a-z0-9]+)*" required maxlength="100"></label>
+  <label>名称 <input name="name" required maxlength="200"></label>
+  <label>排序 <input type="number" name="sort_order" value="0" required></label>
+  <label class="check"><input type="checkbox" name="enabled" checked>启用</label><button type="submit">创建分类</button>
+</form>
+{% for category in categories %}
+<section><h2>{{ category.name }}{{ '（停用）' if not category.enabled else '' }}</h2>
+<form method="post" action="/admin/categories/{{ category.id }}" class="product-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ category.revision }}">
+  <label>Slug <input name="slug" value="{{ category.slug }}" pattern="[a-z0-9]+(-[a-z0-9]+)*" required maxlength="100"></label>
+  <label>名称 <input name="name" value="{{ category.name }}" required maxlength="200"></label>
+  <label>排序 <input type="number" name="sort_order" value="{{ category.sort_order }}" required></label>
+  <label class="check"><input type="checkbox" name="enabled" {% if category.enabled %}checked{% endif %}>启用</label><button type="submit">保存分类</button>
+</form></section>
+{% endfor %}
+<nav aria-label="分类分页">{% if previous %}<a href="{{ previous }}">上一页</a>{% endif %}{% if next_page %}<a href="{{ next_page }}">下一页</a>{% endif %}</nav>
+{% endblock %}
