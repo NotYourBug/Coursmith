@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from course_platform.app import create_app
 from course_platform.content import CourseManifest
 from course_platform.content_inspection import inspect_package
-from course_platform.database import check_database, initialize_database, open_readonly, sync_course
+from course_platform.database import LATEST_SCHEMA_VERSION, check_database, initialize_database, open_readonly, sync_course
 from course_platform.domain import BusinessError
 from course_platform.settings import Settings
 
@@ -40,7 +40,7 @@ def test_lifespan_initializes_latest_and_imports_owner_free_drafts(tmp_path, fix
     app = create_app(settings)
     assert not db.exists()
     with TestClient(app) as client:
-        assert check_database(db)["version"] == 5
+        assert check_database(db)["version"] == LATEST_SCHEMA_VERSION
         product = app.state.product_service.list_products(status="draft", category_id=None, title="", page=1)[0][0]
         assert product.status == "draft"
         assert client.get("/courses/fixture-course").status_code == 404

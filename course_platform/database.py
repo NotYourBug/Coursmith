@@ -161,7 +161,7 @@ def backup_database(source: Path, target: Path) -> None:
         raise
 
 
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 
 
 @contextmanager

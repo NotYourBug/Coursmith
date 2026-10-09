@@ -10,6 +10,8 @@ import zipfile
 
 import pytest
 
+from course_platform.database import LATEST_SCHEMA_VERSION
+
 
 @pytest.fixture(scope="module")
 def installed_release(tmp_path_factory):
@@ -76,10 +78,10 @@ def test_runbook_operational_commands_use_the_installed_environment(installed_re
     # checked via real init-admin --help, never feed credentials through argv.
     migration = next((exe, args) for exe, args in selected if args == ["-m", "course_platform.cli", "migrate"])
     result = subprocess.run([migration[0], *migration[1]], cwd=outside, env=env, capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0 and '"to_version": 5' in result.stdout
+    assert result.returncode == 0 and f'"to_version": {LATEST_SCHEMA_VERSION}' in result.stdout
     result = subprocess.run([migration[0], *migration[1], "--check-only"], cwd=outside, env=env,
                             capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0 and '"version": 5' in result.stdout
+    assert result.returncode == 0 and f'"version": {LATEST_SCHEMA_VERSION}' in result.stdout
     init = next((exe, args) for exe, args in selected if args == ["-m", "course_platform.cli", "init-admin"])
     assert subprocess.run([init[0], *init[1], "--help"], cwd=outside, env=env, capture_output=True, timeout=30).returncode == 0
     for module, cli in (("course_platform.cli", True), ("uvicorn", False)):
@@ -131,7 +133,7 @@ from fastapi.testclient import TestClient
 import course_platform
 from course_platform.app import create_app
 from course_platform.settings import Settings
-from course_platform.database import initialize_database, migrate_database, sync_course, open_readonly, check_database
+from course_platform.database import LATEST_SCHEMA_VERSION, initialize_database, migrate_database, sync_course, open_readonly, check_database
 from course_platform.content import CourseManifest
 from course_platform.admin.auth import AdminService
 from course_platform.domain import Actor
@@ -163,7 +165,7 @@ def setup(db):
         policy=AccessPolicy(access_mode='days',access_days=30,online=True,pdf=False,zip=False,update_policy='current_version')))
     revised = products.update(actor,pid,draft.revision,data)
     product = products.activate(actor,pid,revised.revision,checklist)
-    assert check_database(db)['version'] == 5
+    assert check_database(db)['version'] == LATEST_SCHEMA_VERSION
     return app,client,product
 def public(client,path,**data):
     client.get('/access/restore' if 'restore' in path else '/access')
