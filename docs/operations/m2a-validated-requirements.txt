@@ -1,0 +1,14 @@
+# Task 4 dependencies installed and behavior-validated on Windows amd64,
+# Python 3.11.9, 2026-10-09. These are incremental M2A additions, not the
+# complete platform/runtime installation requirements (see pyproject.toml).
+# Exact direct dependencies:
+markdown-it-py==4.2.0
+nh3==0.3.7
+# New transitive dependency of markdown-it-py:
+mdurl==0.1.2
+# Inventory comparison: every previously installed distribution retained
+# its exact version. pip check: no broken requirements.
+# MarkdownIt commonmark + html=False + table; nh3.clean explicit tags,
+# attributes, HTTP(S) URLs, deny relative URLs, noopener noreferrer.
+# Tests: tests/production/test_rendering.py and test_checks.py.
+# Long browser/fresh-wheel acceptance remains the final branch gate.
