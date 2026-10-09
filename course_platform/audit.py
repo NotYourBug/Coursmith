@@ -64,6 +64,11 @@ ACTION_FIELDS = {
     "production.reference": {"revision", "error_code"},
     "production.mode": {"revision", "error_code"},
     "production.archive": {"revision", "error_code"},
+    "production.outline": {"revision", "error_code"},
+    "production.confirm": {"revision", "error_code"},
+    "production.chapter": {"revision", "error_code"},
+    "production.candidate": {"revision", "error_code"},
+    "production.acknowledge": {"revision", "error_code"},
 }
 _SAFE_IDENTIFIER = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 _CREDENTIAL = re.compile(r"(?:CS|LK)-[A-Za-z0-9_-]+")

@@ -72,3 +72,70 @@ class ReferenceView:
     id: int
     revision: int
     data: ReferenceInput
+
+
+class OutlineItem(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    chapter_id: str | None
+    title: str = Field(min_length=1, max_length=200)
+    goal: str = Field(max_length=2000)
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        return title_text(value)
+
+    @field_validator("goal")
+    @classmethod
+    def validate_goal(cls, value: str) -> str:
+        return source_text(value)
+
+
+class OutlineInput(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    items: list[OutlineItem] = Field(min_length=1, max_length=60)
+
+
+@dataclass(frozen=True)
+class OutlineView:
+    id: int
+    revision: int
+    project_id: int
+    items: tuple[OutlineItem, ...]
+    confirmed: bool
+
+
+@dataclass(frozen=True)
+class ChapterView:
+    id: str
+    body_revision: int | None
+    markdown: str
+
+
+@dataclass(frozen=True)
+class GeneratedResult:
+    kind: str
+    revision_id: int
+    candidate_id: int | None
+
+
+@dataclass(frozen=True)
+class FrozenReference:
+    id: int
+    revision: int
+    data: ReferenceInput
+
+
+@dataclass(frozen=True)
+class ProductionInput:
+    project_id: int
+    project_revision: int
+    mode: str
+    brief_revision: int
+    brief: BriefInput
+    references: tuple[FrozenReference, ...]
+    outline: OutlineView | None
+    chapters: tuple[ChapterView, ...]
+    input_hash: str

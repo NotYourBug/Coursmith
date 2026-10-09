@@ -12,7 +12,9 @@ from ..domain import Actor, BusinessError
 
 
 PRODUCTION_ACTIONS = frozenset({"production.create", "production.update", "production.reference",
-                               "production.mode", "production.archive"})
+                               "production.mode", "production.archive", "production.outline",
+                               "production.confirm", "production.chapter", "production.candidate",
+                               "production.acknowledge"})
 _CODE = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 
 
