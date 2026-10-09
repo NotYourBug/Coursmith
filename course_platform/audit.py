@@ -59,6 +59,11 @@ ACTION_FIELDS = {
     "recovery.reset": {"revoked_sessions", "revision", "error_code"},
     "session.revoke": {"revoked_sessions", "error_code"},
     "legacy.verify": {"revision", "error_code"},
+    "production.create": {"revision", "error_code"},
+    "production.update": {"revision", "error_code"},
+    "production.reference": {"revision", "error_code"},
+    "production.mode": {"revision", "error_code"},
+    "production.archive": {"revision", "error_code"},
 }
 _SAFE_IDENTIFIER = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 _CREDENTIAL = re.compile(r"(?:CS|LK)-[A-Za-z0-9_-]+")
