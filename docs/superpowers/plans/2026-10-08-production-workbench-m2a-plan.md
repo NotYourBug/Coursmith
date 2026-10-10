@@ -253,7 +253,7 @@ def test_quick_title_only_creates_outline_and_draft_without_confirmation(quick_r
 
 ## Task 8：取消、未知调用核对与显式恢复
 
-**Files:** Create jobs/recovery.py、tests/jobs/test_recovery.py；Modify jobs/service.py、jobs/worker.py 仅取消/恢复协调接口、production/events.py/audit.py 的 job.reconcile/job.resume 白名单。
+**Files:** Create jobs/recovery.py、tests/jobs/test_recovery.py；Modify jobs/models.py 仅下述 RecoveryPreview DTO、jobs/service.py、jobs/worker.py 仅取消/恢复协调接口、production/events.py/audit.py 的 job.reconcile/job.resume 白名单。
 
 **Interfaces:** RecoveryService(db_path:Path, jobs:JobService, drafts:DraftService, budget:TokenBudget, *, clock:Clock=utc_now)；cancel(actor:Actor, job_id:int, revision:int)->JobView；recovery_preview(job_id:int)->RecoveryPreview；reconcile(actor:Actor, job_id:int, call_id:int, revision:int, *, usage:Usage|None, accept_retry_risk:bool)->None；resume(actor, job_id:int, revision:int, config:ModelPublic, *, idempotency_key:str, reserved_tokens:int, confirm:bool)->JobView。RecoveryPreview 定义在 jobs/models.py，含 unchanged_input、completed_chapter_ids、pending_chapter_ids、unknown_call_ids；不带密钥。
 
