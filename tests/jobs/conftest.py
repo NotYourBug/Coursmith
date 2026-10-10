@@ -20,11 +20,14 @@ def jobs_context(db_path, clock, product_owner):
         from course_platform.jobs.models import JobRequest
         from course_platform.jobs.repository import JobRepository
         from course_platform.jobs.service import JobService
-        from course_platform.production.models import ModelPublic
+        from course_platform.jobs.budget import TokenBudget
+        from tests.jobs.fakes import production_settings
 
-        config = ModelPublic(provider="local", endpoint_fingerprint="a" * 64,
-                             model="fake-model", context_tokens=64000, prompt_version="m2a-v1")
+        execution_config = production_settings(db_path.parent)
+        config = execution_config.public
+        budget = TokenBudget(db_path, clock=clock.now)
         service = JobService(db_path, drafts, clock=clock.now)
+        service.configure_execution(execution_config, budget)
         repository = JobRepository(db_path, clock=clock.now)
 
         def project(*, mode="quick", outline=False):
@@ -42,7 +45,7 @@ def jobs_context(db_path, clock, product_owner):
                 config, idempotency_key=key, reserved_tokens=reserved_tokens)
 
         return SimpleNamespace(service=service, repository=repository, projects=projects, drafts=drafts,
-            actor=product_owner, config=config, request=JobRequest, project=project, submit=submit,
+            actor=product_owner, config=config, execution_config=execution_config, budget=budget, request=JobRequest, project=project, submit=submit,
             db_path=db_path, clock=clock, repository_type=JobRepository)
     return load
 

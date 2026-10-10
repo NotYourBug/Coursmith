@@ -16,6 +16,8 @@
 
 规格一致性说明：工作区规格存在未提交的唯一数值调整：章节范围 `1–30` → `1–60`，默认仍为 10。本计划依据该工作版本（撰写时 SHA-256 `F7BA3ED1889E51EFABBA3C0398E533FC63277AC0F8A60B3DEEFA34E52175F616`），该调整已随本计划获得用户明确批准，并在执行前固化规格。默认 200,000 token 额度不自动提高，60 章请求可能在预检中因额度或上下文不足被拒绝。
 
+2026-10-10（Asia/Shanghai）模型修正：用户明确要求后续统一使用 deepseek-flash，覆盖原默认 deepseek-chat；模型白名单、配置默认值、后续假模型和运行说明同步使用 deepseek-flash，不将任务静默换为其他模型。仍由维护者明确配置上下文限额，不授权付费请求。
+
 ## Global Constraints
 
 - 单 owner 内部制作，预留 actor_admin_id；不做多管理员页面、收费 SaaS、支付、订单采集、生产部署、真实库升级或 M3A 发布。
@@ -32,6 +34,7 @@
 - 状态 `queued → running → succeeded|failed|cancelled|interrupted`；终态不重新变 running，恢复创建关联新任务；部分失败不误报 succeeded，过期 token 不能写活动内容。
 - SQLite 源正文及不可变修订为事实来源；增量 schema6，不改 v001–v005、不迁移启动中的旧库、不改 M1 课程身份/文件/政策/权益/进度。
 - 后台 no-store、同站 Origin/CSRF/当前管理会话、对象归属校验；普通日志/审计不存题目、正文、资料、提示词、密钥、凭证或 SDK 异常原文。
+- 后续模型统一 deepseek-flash，默认与执行白名单同步；请求显式禁用 thinking，输出上限与精确请求体/估算一致。
 - 模型配置服务端维护；任务不保存密钥，模型/端点/执行条件漂移停止，密钥轮换不把旧密钥复制到任务。
 - 新批次只处理草稿和交接快照，生成完整/结构通过均不是销售审核；模型来源标待核查，不断言事实正确或授权合法。
 - 保留桌面原工作区及规格的未提交调整；不得 git add .、reset/clean、覆盖旧生成入口或借实现任务修复范围外 M1.1 问题。
@@ -205,7 +208,7 @@ def test_lease_expiry_fences_at_60_seconds_but_interrupts_at_120(job_repository,
 
 ## Task 6：模型适配、冻结配置、提示词与费用预留
 
-**Files:** Create production/config.py、prompts.py、llm.py、jobs/budget.py、tests/production/test_model_config.py、test_llm.py、tests/jobs/test_budget.py、tests/jobs/fakes.py；Modify jobs/service.py 接入同事务额度预检/预留，tests/jobs/conftest.py 为既有任务fixture注入执行配置与预算，tests/jobs/test_service.py 仅适配服务端重算额度/注入配置带来的既有断言（保留幂等、权限、隐私与竞争保护），.env.example（非秘密示例）。
+**Files:** Create production/config.py、prompts.py、llm.py、jobs/budget.py、tests/production/test_model_config.py、test_llm.py、tests/jobs/test_budget.py、tests/jobs/fakes.py；Modify jobs/service.py 接入同事务额度预检/预留，tests/jobs/conftest.py 为既有任务fixture注入执行配置与预算，tests/jobs/test_service.py 仅适配服务端重算额度/注入配置带来的既有断言（保留幂等、权限、隐私与竞争保护），.env.example（非秘密示例），以及本规格/计划文档中用户于 2026-10-10 明确指定 deepseek-flash 的默认模型与本项范围同步（仅控制器更新文档）。
 
 **Interfaces:** load_production_settings(settings:Settings, env:Mapping[str,str]|None=None)->ProductionSettings；public_model_config(config:ProductionSettings)->ModelPublic；build_outline_request(input:ProductionInput, config:ModelPublic)->ModelRequest；build_chapter_request(input:ProductionInput, chapter_id:str, config:ModelPublic)->ModelRequest；build_connection_request(config:ModelPublic)->ModelRequest；build_execution_plan(input:ProductionInput|None, *, kind:str, chapter_ids:tuple[str,...], config:ModelPublic)->tuple[ModelRequest,...]；serialize_model_payload(request:ModelRequest)->bytes（与适配器请求体一致，不含Authorization）；OpenAIModel(config:ProductionSettings).generate(request:ModelRequest, *, deadline_seconds:int=120)->ModelResult（async）；retry_delay(error:ModelFailure, retry_index:int)->int|None；parse_outline(text:str, *, chapter_count:int)->OutlineInput。TokenBudget(db_path:Path, *, clock:Clock=utc_now)；estimate(request:ModelRequest)->int（输入估算＋请求输出上限，不含重试倍数）；reserve_in_tx(connection, *, job_id:int, planned_tokens:int, limit:int)->None；begin_call_in_tx(connection, claim:Claim, request:ModelRequest)->int；settle_in_tx(connection, *, call_id:int, usage:Usage|None, status:str)->None。JobService 新增 configure_execution(config:ProductionSettings, budget:TokenBudget)->None（仅组合时注入，不是网页操作），提交在同事务按冻结输入重算额度，不信任调用方 reserved_tokens 更不信任表单金额。
 
@@ -221,7 +224,7 @@ def test_utf8_fallback_is_payload_bytes_plus_2048(model_config, token_budget):
     assert retry_delay(ModelFailure("response_unknown", accepted=None), 0) is None
 ```
 - [ ] **Step 2 — Run RED:** `.venv/Scripts/python.exe -X utf8 -m pytest tests/production/test_model_config.py tests/production/test_llm.py tests/jobs/test_budget.py -q`；测试时注入可控时间和传输，不付费、不实际等待120秒。
-- [ ] **Step 3 — Implement:** 新 env COURSE_MODEL 默认 deepseek-chat、COURSE_MODEL_CONTEXT_TOKENS 无猜测默认、COURSE_TASK_TOKEN_LIMIT=200000；生产缺设置仅禁生成不禁M1启动。AsyncOpenAI max_retries=0，asyncio.timeout(120) 包围整次读响应，不把每包网络 timeout 当总截止；generate 一次只发一次请求，retry_delay 对已知未接受且非认证/结构失败返回2、8或None，由Task7逐次记录再调用。提示词仅生产输入，不附带任意 tools。初始按计划逻辑请求的输入＋max_output保守预留，不预乘互斥尝试次数；每个实际尝试独立登记调用和预留。仅明确未接受的失败按 rejected/已知零用量结算释放原预留后，再独立预留重试；unknown保留额度且不自动重试。每次发送前重验上下文、剩余额度与执行权。build_execution_plan 的快速模式以受限的大纲响应包络预估尚未确定的章节请求，大纲出现后重算，不把模型SDK或jobs类型导入production。费用单价由服务端可选的 COURSE_MODEL_PRICE_JSON 配置注入，字段 input_per_million/output_per_million 为非负 Decimal 字符串、currency/as_of 为非敏感币种/日期；仅金额估算，不做利润指标。
+- [ ] **Step 3 — Implement:** 新 env COURSE_MODEL 默认 deepseek-flash、COURSE_MODEL_CONTEXT_TOKENS 无猜测默认、COURSE_TASK_TOKEN_LIMIT=200000；生产缺设置仅禁生成不禁M1启动。deepseek-flash 请求显式禁用 thinking，完整请求序列化和额度估算包含该受控参数；AsyncOpenAI max_retries=0，asyncio.timeout(120) 包围整次读响应，不把每包网络 timeout 当总截止；generate 一次只发一次请求，retry_delay 对已知未接受且非认证/结构失败返回2、8或None，由Task7逐次记录再调用。提示词仅生产输入，不附带任意 tools。初始按计划逻辑请求的输入＋max_output保守预留，不预乘互斥尝试次数；每个实际尝试独立登记调用和预留。仅明确未接受的失败按 rejected/已知零用量结算释放原预留后，再独立预留重试；unknown保留额度且不自动重试。每次发送前重验上下文、剩余额度与执行权。build_execution_plan 的快速模式以受限的大纲响应包络预估尚未确定的章节请求，大纲出现后重算，不把模型SDK或jobs类型导入production。费用单价由服务端可选的 COURSE_MODEL_PRICE_JSON 配置注入，字段 input_per_million/output_per_million 为非负 Decimal 字符串、currency/as_of 为非敏感币种/日期；仅金额估算，不做利润指标。
 - [ ] **Step 4 — GREEN:** `.venv/Scripts/python.exe -X utf8 -m pytest tests/production/test_model_config.py tests/production/test_llm.py tests/jobs/test_budget.py tests/jobs/test_service.py -q`；Expected: 0 failures。适配器不支持可靠输出限制/配置缺上下文应拒绝，usage严格非负整数；供应商已接收但usage未知不释放预留。
 - [ ] **Step 5 — Commit:** `git commit -m "feat: bound model calls and track uncertain usage"`，明确暂存代码、测试和 .env.example，不暂存真实 .env。
 

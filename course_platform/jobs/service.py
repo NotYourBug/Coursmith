@@ -7,6 +7,7 @@ import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
@@ -15,7 +16,10 @@ from ..database import open_readonly, to_db_time, transaction
 from ..domain import Actor, BusinessError, Clock, utc_now
 from ..production.drafts import DraftService
 from ..production.events import record_production_denial
+from ..production.config import ProductionSettings
 from ..production.models import ModelPublic
+if TYPE_CHECKING:
+    from .budget import TokenBudget
 from ..production.projects import ProjectService
 from .models import JobRequest, JobView, MODIFYING_KINDS, canonical_json, frozen_payload, job_view
 
@@ -30,6 +34,17 @@ class JobService:
             raise BusinessError("job_database", "任务与草稿必须使用同一数据库。", 409)
         self.drafts = drafts
         self.clock = clock
+        self._execution_config: ProductionSettings | None = None
+        self._budget: TokenBudget | None = None
+
+    def configure_execution(self, config: ProductionSettings, budget: TokenBudget) -> None:
+        from .budget import TokenBudget
+
+        if not isinstance(config, ProductionSettings) or not isinstance(budget, TokenBudget) or budget.db_path.resolve() != self.db_path.resolve():
+            raise BusinessError("job_database", "任务与额度必须使用同一数据库和有效配置。", 409)
+        budget.configure_execution(config)
+        self._execution_config = config
+        self._budget = budget
 
     @staticmethod
     def _owner(connection: sqlite3.Connection, actor: Actor) -> None:
@@ -40,7 +55,7 @@ class JobService:
 
     def submit(self, actor: Actor, request: JobRequest, config: ModelPublic, *,
                idempotency_key: str, reserved_tokens: int) -> JobView:
-        """reserved_tokens is trusted server input; Task 6 owns budget computation."""
+        """Caller amount is compatibility input only; server freezes and estimates."""
         object_id = getattr(request, "project_id", "unknown") if isinstance(request, JobRequest) else "unknown"
         request_id = actor.request_id if isinstance(actor, Actor) and isinstance(actor.request_id, str) else "job-denied"
         try:
@@ -59,7 +74,7 @@ class JobService:
                 data["chapter_ids"] = sorted(request.chapter_ids)
                 digest = hashlib.sha256(canonical_json({
                     "actor_admin_id": actor.admin_id, "request": data,
-                    "config": config.model_dump(warnings=False), "reserved_tokens": reserved_tokens,
+                    "config": config.model_dump(warnings=False),
                 }).encode("utf-8")).hexdigest()
                 prior = connection.execute("""SELECT j.*,r.request_digest AS idempotent_digest
                     FROM job_requests r JOIN production_jobs j ON j.id=r.job_id
@@ -106,6 +121,18 @@ class JobService:
                     if parent is None or parent["project_id"] != request.project_id or parent["actor_admin_id"] != actor.admin_id or parent["state"] in ("queued", "running"):
                         raise BusinessError("parent_job_conflict", "关联任务无效，请重新读取。", 409)
 
+                if self._execution_config is None or self._budget is None:
+                    raise BusinessError("model_not_configured", "未配置模型执行，请联系维护者。", 409)
+                if request.kind != "draft_validate":
+                    self._execution_config.require_execution(config)
+                elif config != self._execution_config.public:
+                    raise BusinessError("model_config_changed", "模型执行条件已变化，请创建新任务。", 409)
+                from ..production.prompts import build_execution_plan
+
+                plan = build_execution_plan(frozen, kind=request.kind, chapter_ids=selected, config=config)
+                planned_tokens = sum(self._budget.estimate(item) for item in plan)
+                if planned_tokens > self._execution_config.task_token_limit:
+                    raise BusinessError("token_budget_exceeded", "计划生成额度超限，请减少章节或资料，或联系维护者。", 409)
                 payload = frozen_payload(frozen) if frozen else {}
                 input_json = canonical_json(payload)
                 input_hash = frozen.input_hash if frozen else hashlib.sha256(input_json.encode("utf-8")).hexdigest()
@@ -117,9 +144,8 @@ class JobService:
                     (request.project_id, actor.admin_id, request.kind, request.project_revision, request.parent_job_id,
                      input_hash, input_json, canonical_json(config.model_dump(warnings=False)),
                      canonical_json(selected), digest, now)).lastrowid
-                # No retry, estimation, settlement or limit policy is chosen in this task.
-                connection.execute("""INSERT INTO token_reservations (job_id,reserved_tokens,created_at)
-                    VALUES (?,?,?)""", (job_id, reserved_tokens, now))
+                self._budget.reserve_in_tx(connection, job_id=job_id, planned_tokens=planned_tokens,
+                                           limit=self._execution_config.task_token_limit)
                 connection.execute("""INSERT INTO job_requests
                     (actor_admin_id,action,idempotency_key,request_digest,job_id,created_at)
                     VALUES (?,'submit',?,?,?,?)""", (actor.admin_id, idempotency_key, digest, job_id, now))
