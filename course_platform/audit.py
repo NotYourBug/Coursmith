@@ -69,6 +69,9 @@ ACTION_FIELDS = {
     "production.chapter": {"revision", "error_code"},
     "production.candidate": {"revision", "error_code"},
     "production.acknowledge": {"revision", "error_code"},
+    "job.submit": {"revision", "job_state", "error_code"},
+    "job.cancel": {"revision", "job_state", "error_code"},
+    "job.interrupt": {"revision", "job_state", "error_code"},
 }
 _SAFE_IDENTIFIER = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 _CREDENTIAL = re.compile(r"(?:CS|LK)-[A-Za-z0-9_-]+")
@@ -93,6 +96,8 @@ def _validate(event: AuditEvent) -> str:
     for key, value in event.changes.items():
         if key == "error_code":
             valid = isinstance(value, str) and _SAFE_IDENTIFIER.fullmatch(value)
+        elif key == "job_state":
+            valid = type(value) is str and value in ("queued", "running", "succeeded", "failed", "cancelled", "interrupted")
         elif key == "status":
             valid = value in ("draft", "active", "paused", "archived", "paid", "refunded")
         elif key == "update_policy":

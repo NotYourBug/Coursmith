@@ -14,7 +14,7 @@ from ..domain import Actor, BusinessError
 PRODUCTION_ACTIONS = frozenset({"production.create", "production.update", "production.reference",
                                "production.mode", "production.archive", "production.outline",
                                "production.confirm", "production.chapter", "production.candidate",
-                               "production.acknowledge"})
+                               "production.acknowledge", "job.submit", "job.cancel", "job.interrupt"})
 _CODE = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 
 
@@ -35,6 +35,6 @@ def record_production_denial(db_path: Path, actor: Actor | None, action: str, ob
     safe_object_id = object_id if isinstance(object_id, str) and (
         object_id in ("new", "unknown") or (object_id.isascii() and object_id.isdecimal() and len(object_id) <= 20)
     ) else "unknown"
-    record_denial(db_path, AuditEvent(admin_id, "production", safe_object_id, action, code,
+    record_denial(db_path, AuditEvent(admin_id, "job" if action.startswith("job.") else "production", safe_object_id, action, code,
                                      "denied", request_id, {"error_code": code}))
     error.denial_recorded = True

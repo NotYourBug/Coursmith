@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -139,3 +140,26 @@ class ProductionInput:
     outline: OutlineView | None
     chapters: tuple[ChapterView, ...]
     input_hash: str
+
+
+class ModelPublic(BaseModel):
+    """Server-controlled non-secret execution conditions frozen into each job."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    provider: str = Field(min_length=1, max_length=128)
+    endpoint_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model: str = Field(min_length=1, max_length=128)
+    context_tokens: int | None = Field(ge=1, le=9223372036854775807)
+    prompt_version: str = Field(min_length=1, max_length=128)
+    outline_output_tokens: int = Field(default=4000, ge=1, le=4000)
+    chapter_output_tokens: int = Field(default=4000, ge=1, le=4000)
+
+    @field_validator("provider", "model", "prompt_version")
+    @classmethod
+    def validate_public_identifier(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,127}", value) or "://" in value or re.search(
+            r"(?:^|[./:_-])(?:sk-|CS-|LK-)", value
+        ):
+            raise ValueError("Use a non-secret execution identifier.")
+        return value
