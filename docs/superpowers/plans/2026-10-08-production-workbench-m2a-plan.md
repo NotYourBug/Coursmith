@@ -12,6 +12,8 @@
 
 状态：2026-10-08 编写并自审；2026-10-09（Asia/Shanghai）获用户明确批准，按“分任务子代理实现＋逐项独立审查”进入执行。用户同时批准 60 章上限；全部实现、独立审查与完整验收通过后可非强制推送工作分支。
 
+2026-10-10（Asia/Shanghai）预算澄清：用户明确选择“仅明确未被接受的失败释放预留，再独立预留重试”。初始任务预检按计划逻辑请求保守预留，不将互斥的三次尝试同时重复占用；每次实际尝试仍有独立调用和预留记录。未知调用保留预留且不自动重试。默认 200,000、输出 4,000、余量 2,048、最多两次重试及 2/8 秒间隔全部保持不变。
+
 规格一致性说明：工作区规格存在未提交的唯一数值调整：章节范围 `1–30` → `1–60`，默认仍为 10。本计划依据该工作版本（撰写时 SHA-256 `F7BA3ED1889E51EFABBA3C0398E533FC63277AC0F8A60B3DEEFA34E52175F616`），该调整已随本计划获得用户明确批准，并在执行前固化规格。默认 200,000 token 额度不自动提高，60 章请求可能在预检中因额度或上下文不足被拒绝。
 
 ## Global Constraints
@@ -25,6 +27,7 @@
 - 大纲模型输出最多 4,000 输出 token；章节每调用最多 4,000 输出 token；连接测试最多 32 输出 token、一次请求、无自动重试。
 - 单任务 token 预留上限默认 200,000；输入后备估算为完整请求正文 UTF-8 字节数加 2,048 token 协议余量；缺上下文限额则拒绝生成，不按模型名猜测。
 - 单次模型调用总截止 120 秒；SDK 隐式重试关闭；可证明未接受的短暂失败最多两次重试，等待 2 秒、8 秒；普通 5xx、超时/断流未知不自动重发。
+- 初始预留按计划逻辑请求计算，不将互斥的首次及两次重试同时重复占用；仅明确未接受的失败按 rejected/已知零用量结算释放，再独立预留新尝试；未知不释放、不自动重试。
 - 一个 Web、一个独立 worker，同一时刻一个任务/模型请求；每项目最多一个 queued/running 修改任务；每 10 秒独立心跳、租约 60 秒、120 秒无心跳才标 interrupted。
 - 状态 `queued → running → succeeded|failed|cancelled|interrupted`；终态不重新变 running，恢复创建关联新任务；部分失败不误报 succeeded，过期 token 不能写活动内容。
 - SQLite 源正文及不可变修订为事实来源；增量 schema6，不改 v001–v005、不迁移启动中的旧库、不改 M1 课程身份/文件/政策/权益/进度。
@@ -206,7 +209,7 @@ def test_lease_expiry_fences_at_60_seconds_but_interrupts_at_120(job_repository,
 
 **Interfaces:** load_production_settings(settings:Settings, env:Mapping[str,str]|None=None)->ProductionSettings；public_model_config(config:ProductionSettings)->ModelPublic；build_outline_request(input:ProductionInput, config:ModelPublic)->ModelRequest；build_chapter_request(input:ProductionInput, chapter_id:str, config:ModelPublic)->ModelRequest；build_connection_request(config:ModelPublic)->ModelRequest；build_execution_plan(input:ProductionInput|None, *, kind:str, chapter_ids:tuple[str,...], config:ModelPublic)->tuple[ModelRequest,...]；serialize_model_payload(request:ModelRequest)->bytes（与适配器请求体一致，不含Authorization）；OpenAIModel(config:ProductionSettings).generate(request:ModelRequest, *, deadline_seconds:int=120)->ModelResult（async）；retry_delay(error:ModelFailure, retry_index:int)->int|None；parse_outline(text:str, *, chapter_count:int)->OutlineInput。TokenBudget(db_path:Path, *, clock:Clock=utc_now)；estimate(request:ModelRequest)->int（输入估算＋请求输出上限，不含重试倍数）；reserve_in_tx(connection, *, job_id:int, planned_tokens:int, limit:int)->None；begin_call_in_tx(connection, claim:Claim, request:ModelRequest)->int；settle_in_tx(connection, *, call_id:int, usage:Usage|None, status:str)->None。JobService 新增 configure_execution(config:ProductionSettings, budget:TokenBudget)->None（仅组合时注入，不是网页操作），提交在同事务按冻结输入重算额度，不信任调用方 reserved_tokens 更不信任表单金额。
 
-- [ ] **Step 1 — RED tests:** test_config_drift_blocks_but_key_rotation_does_not；test_missing_context_limit_refuses_execution_not_m1_startup；test_utf8_fallback_is_payload_bytes_plus_2048；test_valid_60_chapters_can_exceed_200000_budget_without_truncation；test_retry_proven_not_accepted_uses_2_then_8_seconds；test_continuous_stream_has_total_120_second_deadline；test_unknown_usage_keeps_reservation；test_price_snapshot_is_optional_validated_and_historical；认证/5xx/超时不盲重试、坏JSON/空/200KiB+响应拒绝、repr/日志无key。
+- [ ] **Step 1 — RED tests:** test_config_drift_blocks_but_key_rotation_does_not；test_missing_context_limit_refuses_execution_not_m1_startup；test_utf8_fallback_is_payload_bytes_plus_2048；test_valid_60_chapters_can_exceed_200000_budget_without_truncation；test_retry_proven_not_accepted_uses_2_then_8_seconds；test_proven_rejection_releases_before_fresh_retry_reservation；test_continuous_stream_has_total_120_second_deadline；test_unknown_usage_keeps_reservation；test_price_snapshot_is_optional_validated_and_historical；认证/5xx/超时不盲重试、坏JSON/空/200KiB+响应拒绝、repr/日志无key。
 
 ```python
 def test_utf8_fallback_is_payload_bytes_plus_2048(model_config, token_budget):
@@ -218,7 +221,7 @@ def test_utf8_fallback_is_payload_bytes_plus_2048(model_config, token_budget):
     assert retry_delay(ModelFailure("response_unknown", accepted=None), 0) is None
 ```
 - [ ] **Step 2 — Run RED:** `.venv/Scripts/python.exe -X utf8 -m pytest tests/production/test_model_config.py tests/production/test_llm.py tests/jobs/test_budget.py -q`；测试时注入可控时间和传输，不付费、不实际等待120秒。
-- [ ] **Step 3 — Implement:** 新 env COURSE_MODEL 默认 deepseek-chat、COURSE_MODEL_CONTEXT_TOKENS 无猜测默认、COURSE_TASK_TOKEN_LIMIT=200000；生产缺设置仅禁生成不禁M1启动。AsyncOpenAI max_retries=0，asyncio.timeout(120) 包围整次读响应，不把每包网络 timeout 当总截止；generate 一次只发一次请求，retry_delay 对已知未接受且非认证/结构失败返回2、8或None，由Task7逐次记录再调用。提示词仅生产输入，不附带任意 tools。计算请求输入＋max_output预留，每允许重试也预留；unknown保留额度。build_execution_plan 的快速模式以受限的大纲响应包络预估尚未确定的章节请求，大纲出现后重算，不把模型SDK或jobs类型导入production。费用单价由服务端可选的 COURSE_MODEL_PRICE_JSON 配置注入，字段 input_per_million/output_per_million 为非负 Decimal 字符串、currency/as_of 为非敏感币种/日期；仅金额估算，不做利润指标。
+- [ ] **Step 3 — Implement:** 新 env COURSE_MODEL 默认 deepseek-chat、COURSE_MODEL_CONTEXT_TOKENS 无猜测默认、COURSE_TASK_TOKEN_LIMIT=200000；生产缺设置仅禁生成不禁M1启动。AsyncOpenAI max_retries=0，asyncio.timeout(120) 包围整次读响应，不把每包网络 timeout 当总截止；generate 一次只发一次请求，retry_delay 对已知未接受且非认证/结构失败返回2、8或None，由Task7逐次记录再调用。提示词仅生产输入，不附带任意 tools。初始按计划逻辑请求的输入＋max_output保守预留，不预乘互斥尝试次数；每个实际尝试独立登记调用和预留。仅明确未接受的失败按 rejected/已知零用量结算释放原预留后，再独立预留重试；unknown保留额度且不自动重试。每次发送前重验上下文、剩余额度与执行权。build_execution_plan 的快速模式以受限的大纲响应包络预估尚未确定的章节请求，大纲出现后重算，不把模型SDK或jobs类型导入production。费用单价由服务端可选的 COURSE_MODEL_PRICE_JSON 配置注入，字段 input_per_million/output_per_million 为非负 Decimal 字符串、currency/as_of 为非敏感币种/日期；仅金额估算，不做利润指标。
 - [ ] **Step 4 — GREEN:** `.venv/Scripts/python.exe -X utf8 -m pytest tests/production/test_model_config.py tests/production/test_llm.py tests/jobs/test_budget.py tests/jobs/test_service.py -q`；Expected: 0 failures。适配器不支持可靠输出限制/配置缺上下文应拒绝，usage严格非负整数；供应商已接收但usage未知不释放预留。
 - [ ] **Step 5 — Commit:** `git commit -m "feat: bound model calls and track uncertain usage"`，明确暂存代码、测试和 .env.example，不暂存真实 .env。
 
@@ -241,7 +244,7 @@ def test_quick_title_only_creates_outline_and_draft_without_confirmation(quick_r
     assert len(quick_run.model.calls) == 11
 ```
 - [ ] **Step 2 — Run RED:** `.venv/Scripts/python.exe -X utf8 -m pytest tests/jobs/test_worker.py tests/jobs/test_handlers.py -q`。
-- [ ] **Step 3 — Implement:** 单请求执行＋独立心跳 asyncio task（短 SQLite事务放线程池），运行网络时不持有DB锁。快速自动校验/采用首次大纲，冻结派生章节输入并重算额度；已有大纲重做只候选不自动替换。精细仅确认后批量章；固定其他 handler 包含重做、draft_validate和32token connection_test。每次发送前先写 model_calls.sent，仅已知未接受失败依retry_delay等待2/8再登记新call并复验token/取消/剩余额度；崩溃剩余 sent 变 unknown，绝不发出自动补请求。增加 test_safe_retries_have_distinct_call_rows_and_backoff。正常候选与过期隔离响应不同表状态，不让历史结果获得当前写权限。
+- [ ] **Step 3 — Implement:** 单请求执行＋独立心跳 asyncio task（短 SQLite事务放线程池），运行网络时不持有DB锁。快速自动校验/采用首次大纲，冻结派生章节输入并重算额度；已有大纲重做只候选不自动替换。精细仅确认后批量章；固定其他 handler 包含重做、draft_validate和32token connection_test。每次发送前先写 model_calls.sent；仅明确未接受的失败按 rejected/已知零用量结算释放原预留，依retry_delay等待2/8后独立预留并登记新call，复验token/取消/剩余额度再发送。崩溃剩余 sent 变 unknown并保留预留，绝不发出自动补请求。增加 test_safe_retries_have_distinct_call_rows_and_backoff，证明调用行各自独立、先释放已知拒绝再预留下一次、unknown不释放。正常候选与过期隔离响应不同表状态，不让历史结果获得当前写权限。
 - [ ] **Step 4 — GREEN:** `.venv/Scripts/python.exe -X utf8 -m pytest tests/jobs tests/production/test_drafts.py -q`；Expected: 0 failures。屏障同步的真实事务检验保存/取消/过期竞态，业务指针、调用结算和审计原子更新；审查无模拟线性百分比或默认网络重试。
 - [ ] **Step 5 — Commit:** `git commit -m "feat: run durable dual-mode draft generation"`。
 
