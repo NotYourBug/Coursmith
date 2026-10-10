@@ -72,6 +72,8 @@ ACTION_FIELDS = {
     "job.submit": {"revision", "job_state", "error_code"},
     "job.cancel": {"revision", "job_state", "error_code"},
     "job.interrupt": {"revision", "job_state", "error_code"},
+    "job.step": {"error_code"},
+    "job.finish": {"revision", "job_state", "error_code"},
 }
 _SAFE_IDENTIFIER = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 _CREDENTIAL = re.compile(r"(?:CS|LK)-[A-Za-z0-9_-]+")

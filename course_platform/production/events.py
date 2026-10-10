@@ -14,7 +14,8 @@ from ..domain import Actor, BusinessError
 PRODUCTION_ACTIONS = frozenset({"production.create", "production.update", "production.reference",
                                "production.mode", "production.archive", "production.outline",
                                "production.confirm", "production.chapter", "production.candidate",
-                               "production.acknowledge", "job.submit", "job.cancel", "job.interrupt"})
+                               "production.acknowledge", "job.submit", "job.cancel", "job.interrupt",
+                               "job.step", "job.finish"})
 _CODE = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 
 
