@@ -329,7 +329,7 @@ def test_narrow_editor_does_not_store_draft_in_localstorage(workbench_page):
 
 ## Task 11：不可变检查结果与 M3A 交接快照
 
-**Files:** Create production/snapshots.py、templates/admin/production/snapshot.html、tests/production/test_snapshots.py；Modify production路由/项目模板，仅新增检查和交接操作。
+**Files:** Create production/snapshots.py、templates/admin/production/snapshot.html、tests/production/test_snapshots.py；Modify production路由/项目模板，仅新增检查和交接操作；同步 audit.py、production/events.py、admin/routes/production_forms.py 中 production.check/production.snapshot 的严格审计白名单及固定路由映射，并在 tests/test_audit.py 添加限定允许/拒绝回归。审计只允许修订/错误代码等现有安全元数据，不保存源文本、不放宽其他动作。
 
 **Interfaces:** SnapshotService(db_path:Path, drafts:DraftService, *, clock:Clock=utc_now)；check(actor:Actor, project_id:int, revision:int)->DraftCheck；create(actor:Actor, project_id:int, revision:int)->SnapshotView；get(actor:Actor, snapshot_id:int)->SnapshotView；read_snapshot_payload(snapshot_id:int)->ProductionInput（仅可信服务使用，无公共HTTP）。既有固定快照模型及序列化规则见类型段。
 
