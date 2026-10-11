@@ -15,6 +15,7 @@ from ...domain import BusinessError
 from ...jobs.models import JobRequest
 from ...production.llm import Usage
 from ...production.prompts import build_execution_plan
+from .production import _local_time
 from .production_forms import ProductionRoute, integer, owner_objects, protected_post, render
 
 router = APIRouter(prefix="/admin/jobs", route_class=ProductionRoute)
@@ -89,7 +90,7 @@ def readonly_job_metadata(request: Request, job_id: int) -> dict:
         can_resume = False
     return dict(job=job, children=children, attempts=attempts, steps=steps, calls=calls, reconciliation_history=history,
         recovery=preview, recovery_error=recovery_error, candidate_only=candidate_only, can_resume=can_resume,
-        fresh_reserve=fresh_reserve, unknown_exposure=unknown_exposure, child_kind=child_kind)
+        fresh_reserve=fresh_reserve, unknown_exposure=unknown_exposure, child_kind=child_kind, display_time=_local_time)
 
 
 @router.get("", name="job_list")
@@ -106,7 +107,7 @@ def jobs(request: Request):
             AND object_type='job' AND object_id='maintenance' AND reason='maintenance_checked'
             AND outcome='success' ORDER BY id DESC LIMIT 1""").fetchone()
     return render(request, "jobs/list.html", jobs=listed, page=page, heartbeats=heartbeats,
-        last_maintenance=last_check["created_at"] if last_check else None)
+        last_maintenance=last_check["created_at"] if last_check else None, display_time=_local_time)
 
 
 # Static model routes precede /{job_id}; /model is never parsed as a job ID.

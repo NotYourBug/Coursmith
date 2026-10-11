@@ -123,6 +123,50 @@ def test_cross_project_candidate_and_chapter_id_rejected(production_data):
         assert response.status_code == 404 and "input-must-not-echo" not in response.text
 
 
+def test_removed_chapter_candidate_history_stays_readonly_and_owned(production_data):
+    from tests.production.test_drafts import generate
+    d, c = production_data, production_data.client
+    result = generate(d.db_path, d.clock, d.actor, d.drafts, d.project_id,
+                      d.chapter_id, None, "保留历史候选<script>历史源码</script>")
+    base = f"/admin/production/{d.project_id}"
+    url = base + f"/candidates/{result.candidate_id}"
+    assert c.get(url).status_code == 200
+    current = d.drafts.freeze_input(d.project_id)
+    d.drafts.save_outline(d.actor, d.project_id, current.project_revision,
+                         OutlineInput(items=[current.outline.items[1]]))
+    listing = c.get(base)
+    assert listing.status_code == 200 and url in listing.text
+    history = c.get(url)
+    assert history.status_code == 200 and history.headers["cache-control"] == "no-store"
+    assert textarea(history, "candidate_text") == "保留历史候选<script>历史源码</script>"
+    assert "章节已移出当前大纲" in history.text
+    assert 'action="' + url + '/adopt"' not in history.text
+    assert "<script>历史源码</script>" not in history.text
+    before = d.drafts.freeze_input(d.project_id)
+    assert post(c, url + "/adopt", revision=str(before.project_revision), body_revision="").status_code == 404
+    assert d.drafts.freeze_input(d.project_id) == before
+    other = d.projects.create(d.actor, BriefInput(title="另一项目"), mode="quick")
+    denial = c.get(f"/admin/production/{other.id}/candidates/{result.candidate_id}")
+    assert denial.status_code == 404 and "保留历史候选" not in denial.text
+
+
+def test_job_timestamps_display_shanghai_without_changing_utc(production_data):
+    d, c = production_data, production_data.client
+    submitted = post(c, f"/admin/production/{d.project_id}/generate", revision="2",
+                     kind="chapters_generate", idempotency_key="time-display")
+    assert submitted.status_code == 303
+    job_url = submitted.headers["location"]
+    with transaction(d.db_path) as conn:
+        before = tuple(conn.execute("SELECT * FROM production_jobs").fetchone())
+    listed = c.get("/admin/jobs")
+    assert listed.status_code == 200
+    assert "上海时间" in listed.text and "2026-10-02 08:00:00" in listed.text
+    detail = c.get(job_url)
+    assert detail.status_code == 200 and "2026-10-02 08:00:00" in detail.text
+    with transaction(d.db_path) as conn:
+        assert tuple(conn.execute("SELECT * FROM production_jobs").fetchone()) == before
+
+
 def test_cancel_resume_and_existing_child_navigation(production_data):
     d, c = production_data, production_data.client
     base = f"/admin/production/{d.project_id}"
@@ -405,7 +449,8 @@ def test_explicit_maintenance_zero_repeat_and_latest_id_readonly(production_data
         append_event(conn, AuditEvent(d.actor.admin_id, "job", "maintenance", "job.interrupt", "maintenance_checked", "denied", "denied-check", {}))
         before = [dict(r) for r in conn.execute("SELECT * FROM admin_events ORDER BY id")]
     page = c.get("/admin/jobs")
-    assert page.status_code == 200 and "最近明确检查时间：" + markers[-1]["created_at"] in page.text
+    assert page.status_code == 200
+    assert 'datetime="' + markers[-1]["created_at"] + '">2026-10-02 08:00:01 Asia/Shanghai</time>' in page.text
     assert "并不代表 worker 周期维护时间或发生了任务中断" in page.text
     with transaction(d.db_path) as conn:
         assert [dict(r) for r in conn.execute("SELECT * FROM admin_events ORDER BY id")] == before
@@ -471,7 +516,10 @@ def test_explicit_maintenance_marker_failure_preserves_repair_and_old_time(produ
         assert conn.execute("SELECT state FROM production_jobs WHERE id=?", (claim.job_id,)).fetchone()[0] == "interrupted"
         assert conn.execute("SELECT status FROM model_calls WHERE id=?", (call_id,)).fetchone()[0] == "unknown"
         assert conn.execute("SELECT released_tokens FROM token_reservations WHERE call_id=?", (call_id,)).fetchone()[0] == 0
-    assert "最近明确检查时间：" + old[-1]["created_at"] in c.get("/admin/jobs").text
+    from datetime import datetime, timedelta
+    old_time = old[-1]["created_at"]
+    expected_time = (datetime.fromisoformat(old_time) + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    assert 'datetime="' + old_time + '">' + expected_time + ' Asia/Shanghai</time>' in c.get("/admin/jobs").text
     assert "private-raw-marker-error" not in response.text + caplog.text
 
 

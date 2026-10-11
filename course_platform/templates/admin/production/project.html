@@ -7,14 +7,11 @@
 {% block content %}
 <h1>{{ project.brief.title if project else '新建课程' }}</h1>
 <p>课程草稿保持私有。请勿粘贴商业秘密、个人信息或凭证；AI 推定的需求和来源待人工检查。</p>
-<p>默认 10 章，范围 1–60；每次输出最多 4000 token，任务预留上限 {{ settings.task_token_limit }}。模型 {{ settings.public.model }}。超限请减少章节或资料，或联系维护者。</p>
+<details open><summary>默认配置</summary><p>课程类型：课程；仅题目必填。默认 10 章，范围 1–60；未填写的受众、先修条件、学习目标及难度：AI 推定，待人工检查。每次输出最多 4000 token，任务预留上限 {{ settings.task_token_limit }}。模型 {{ settings.public.model }}，thinking 已禁用。减少章节数或参考输入，或联系维护者调整额度，可处理合法组合的执行超限。</p></details>
 {% if project %}<p>项目 {{ project.id }} · 修订 {{ project.revision }} · {{ project.status }} · {{ '快速制作' if project.mode == 'quick' else '精细制作' }}</p><p><a href="/admin/production/{{ project.id }}/preview">只读安全预览</a> · <a href="/admin/jobs">任务中心</a></p>{% endif %}
-{% if rendered is defined %}
-<h2>安全预览</h2>
-{% for chapter, result in rendered %}<section><h3>章节 {{ loop.index }}</h3>{{ result.html|safe }}{% for finding in result.findings %}<p>{{ finding.code }}</p>{% endfor %}</section>{% endfor %}
-{% else %}
+{% if project %}<p>{% if frozen.chapters and frozen.chapters|selectattr('body_revision', 'ne', none)|list|length == frozen.chapters|length %}正文生成或编辑完整；{% else %}正文尚未完整；{% endif %}{% if not draft_check.blocking %}结构检查通过；{% else %}结构检查仍有阻断项；{% endif %}人工待审核。结构通过不说明事实、来源或教学价值已审核。</p>{% endif %}
 <h2>制作需求</h2>
-<form method="post" action="{{ '/admin/production/' ~ project.id ~ '/brief' if project else '/admin/production/new' }}">
+<form method="post" action="{{ '/admin/production/' ~ project.id ~ '/brief' if project else '/admin/production/new' }}" data-editor-form>
 {{ hidden() }}
 <label>题目 <input name="title" value="{{ values.get('title', '') }}" maxlength="200" required></label>
 {% if not project %}<label>模式 <select name="mode"><option value="quick">快速制作</option><option value="precise">精细制作</option></select></label>{% endif %}
@@ -27,21 +24,20 @@
 <h2>模式与归档</h2>
 <form method="post" action="/admin/production/{{ project.id }}/mode">{{ hidden() }}<select name="mode"><option value="quick"{% if project.mode=='quick' %} selected{% endif %}>快速</option><option value="precise"{% if project.mode=='precise' %} selected{% endif %}>精细</option></select><button type="submit">切换模式</button></form>
 <form method="post" action="/admin/production/{{ project.id }}/archive">{{ hidden() }}<button type="submit">归档项目</button></form>
+<p>归档仅隐藏日常项目并停止新生成，正文、候选、任务历史与用量保留。有活动任务时先取消并等待停止。</p>
 <h2>可选参考资料</h2><p>最多十条，正文总计两万字符；来源说明是经营者记录，不是授权认证。</p>
 {% for reference in frozen.references %}
-<form method="post" action="/admin/production/{{ project.id }}/references/save">{{ hidden() }}<input type="hidden" name="reference_id" value="{{ reference.id }}"><label>参考正文 <textarea name="text">{{ reference.data.text }}</textarea></label><label>来源说明 <textarea name="source_note">{{ reference.data.source_note }}</textarea></label><label>来源状态 <select name="source_status">{% for status,label in [('unprovided','未提供来源'),('pending','待核查'),('owner_noted','经营者已有说明')] %}<option value="{{ status }}"{% if status==reference.data.source_status %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><button type="submit">保存参考资料 {{ reference.id }}</button></form>
+<form method="post" action="/admin/production/{{ project.id }}/references/save" data-editor-form>{{ hidden() }}<input type="hidden" name="reference_id" value="{{ reference.id }}"><label>参考正文 <textarea name="text">{{ reference.data.text }}</textarea></label><label>来源说明 <textarea name="source_note">{{ reference.data.source_note }}</textarea></label><label>来源状态 <select name="source_status">{% for status,label in [('unprovided','未提供来源'),('pending','待核查'),('owner_noted','经营者已有说明')] %}<option value="{{ status }}"{% if status==reference.data.source_status %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><button type="submit">保存参考资料 {{ reference.id }}</button></form>
 <form method="post" action="/admin/production/{{ project.id }}/references/{{ reference.id }}/remove">{{ hidden() }}<button type="submit">移除参考资料 {{ reference.id }}</button></form>
 {% endfor %}
-<form method="post" action="/admin/production/{{ project.id }}/references/save">{{ hidden() }}<label>新参考正文 <textarea name="text"></textarea></label><label>来源说明 <textarea name="source_note"></textarea></label><select name="source_status"><option value="unprovided">未提供来源</option><option value="pending">待核查</option><option value="owner_noted">经营者已有说明</option></select><button type="submit">添加参考资料</button></form>
-<h2>大纲</h2><p>章节身份使用服务端 ID。编辑已有章节请保留 chapter_id；新章节填 null。JSON 数组支持调整次序。</p>
-<form method="post" action="/admin/production/{{ project.id }}/outline/save">{{ hidden() }}<label>大纲 JSON <textarea name="outline_json" rows="12">{{ outline_json }}</textarea></label><button type="submit">保存大纲</button></form>
-{% if frozen.outline %}<p>{{ '当前大纲已明确确认；仍需人工内容检查。' if frozen.outline.confirmed else '当前大纲尚未人工确认。快速系统展开不代表人工确认。' }}</p><form method="post" action="/admin/production/{{ project.id }}/outline/confirm">{{ hidden() }}<button type="submit">确认当前大纲生成方向</button></form>{% endif %}
+<form method="post" action="/admin/production/{{ project.id }}/references/save" data-editor-form>{{ hidden() }}<label>新参考正文 <textarea name="text"></textarea></label><label>来源说明 <textarea name="source_note"></textarea></label><label>来源状态<select name="source_status"><option value="unprovided">未提供来源</option><option value="pending">待核查</option><option value="owner_noted">经营者已有说明</option></select></label><button type="submit">添加参考资料</button></form>
+{% include "admin/production/outline.html" %}
 <h2>章节</h2><ol>{% for chapter in frozen.chapters %}<li><a href="/admin/production/{{ project.id }}/chapters/{{ chapter.id }}">{{ frozen.outline.items[loop.index0].title }}</a> · {{ '已保存正文' if chapter.body_revision is not none else '正文待生成' }}{% if chapter_flags[chapter.id].needs_review %} · 输入变化待检查{% endif %}</li>{% else %}<li>先生成或保存大纲。</li>{% endfor %}</ol>
 <form method="post" action="/admin/production/{{ project.id }}/acknowledge">{{ hidden() }}<label>明确处理输入变化的章节 ID（每行一个）<textarea name="chapter_ids"></textarea></label><button type="submit">确认已复核所选变更</button></form>
 <h2>生成与检查任务</h2><p>明确提交会预留额度，模型请求可能计费。任务在独立 worker 执行；本页只排队。精细模式批量生成前须确认当前大纲。</p>
+<p>快速制作只需题目，明确选择“开始制作草稿”并提交后自动展开到草稿。精细模式确认绑定当前需求、资料和大纲修订，变更后需重新确认。</p>
 <form method="post" action="/admin/production/{{ project.id }}/generate">{{ hidden() }}<input type="hidden" name="idempotency_key" value="{{ idempotency_key }}"><label>任务 <select name="kind">{% if project.mode=='quick' %}<option value="course_draft_generate">开始制作草稿</option>{% endif %}<option value="outline_generate">生成大纲候选</option><option value="chapters_generate">生成章节正文</option><option value="draft_validate">草稿结构检查</option></select></label><label>所选章节 ID（留空表示所有活动章，每行一个）<textarea name="chapter_ids"></textarea></label><button type="submit">提交制作任务</button></form>
 <h2>生成候选</h2><ul>{% for candidate in candidates %}<li><a href="/admin/production/{{ project.id }}/candidates/{{ candidate.id }}">候选 {{ candidate.id }} · {{ candidate.kind }} · {{ candidate.state }}</a></li>{% else %}<li>暂无候选。</li>{% endfor %}</ul>
 <h2>项目任务</h2><ul>{% for job in project_jobs %}<li><a href="/admin/jobs/{{ job.id }}">任务 {{ job.id }} · {{ job.kind }} · {{ job.state }}</a></li>{% else %}<li>暂无任务。</li>{% endfor %}</ul>
-{% endif %}
 {% endif %}
 {% endblock %}

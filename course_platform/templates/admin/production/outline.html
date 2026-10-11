@@ -1,0 +1,3 @@
+<h2>大纲</h2><p>章节身份使用服务端 ID。编辑已有章节请保留 chapter_id；新章节填 null。JSON 数组支持调整次序，移除章节保留历史。</p>
+<form method="post" action="/admin/production/{{ project.id }}/outline/save" data-editor-form>{{ hidden() }}<label>大纲 JSON <textarea name="outline_json" rows="12">{{ outline_json }}</textarea></label><button type="submit">保存大纲</button></form>
+{% if frozen.outline %}<p>当前大纲修订 {{ frozen.outline.revision }}：{{ '当前大纲已明确确认；仍需人工内容检查。' if frozen.outline.confirmed else '当前大纲尚未人工确认。快速系统展开不代表人工确认。' }}</p><form method="post" action="/admin/production/{{ project.id }}/outline/confirm">{{ hidden() }}<button type="submit">确认当前大纲生成方向</button></form>{% endif %}

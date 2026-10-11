@@ -308,7 +308,7 @@ def test_duplicate_decoded_field_rejected(production_client):
 
 ## Task 10：编辑体验、候选比较与真实浏览器流程
 
-**Files:** Create templates/admin/production/{outline,candidate,preview}.html、static/admin/production.js、production.css、tests/production/test_browser_workbench.py、test_editor_script.py；Modify Task9模板、admin/base.html 的仅制作页面资源加载、admin/routes/production.py 的增强模板/只读预览上下文及历史候选访问、tests/production/test_routes.py 的历史候选回归及 tests/production/conftest.py 的 workbench_page fixture。历史候选只读展示保留，移除章节的候选不开放当前正文采用；不改变原生动作或服务授权。真实Web进程共享测试DB，测试worker可在独立测试线程跑既有Worker＋ScriptedModel；Task12再验证实际worker子进程，不在生产增加fake env。
+**Files:** Create templates/admin/production/{outline,candidate,preview}.html、static/admin/production.js、production.css、tests/production/test_browser_workbench.py、test_editor_script.py；Modify Task9模板、admin/base.html 的仅制作页面资源加载、admin/routes/production.py 的增强模板/只读预览上下文及历史候选访问、admin/routes/jobs.py 的只读 Asia/Shanghai 时间展示上下文、tests/production/test_routes.py 的历史候选和时间展示回归及 tests/production/conftest.py 的 workbench_page fixture。历史候选只读展示保留，移除章节的候选不开放当前正文采用；时间仍存 UTC，不改变原生动作、服务授权或持久状态。真实Web进程共享测试DB，测试worker可在独立测试线程跑既有Worker＋ScriptedModel；Task12再验证实际worker子进程，不在生产增加fake env。
 
 **Interfaces:** 页面动作消费 Task9 原生POST及明确对象/修订字段；JS仅 attachDirtyGuard(form:HTMLFormElement)->void、insertMarkdown(editor:HTMLTextAreaElement, before:string, after:string)->void，不作授权判断。首版选择手动刷新任务，不实现可选轮询，因此不增加 CSP connect-src。
 

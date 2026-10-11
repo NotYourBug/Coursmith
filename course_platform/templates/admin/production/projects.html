@@ -4,8 +4,8 @@
 <h1>制作项目</h1>
 <p>私有课程草稿；生成完成和结构通过仍需人工检查。</p>
 <p><a href="/admin/production/new">新建课程</a> · <a href="/admin/production?archived={{ 0 if archived else 1 }}">{{ '日常项目' if archived else '已归档项目' }}</a></p>
-<table><thead><tr><th>题目</th><th>模式</th><th>正文完成</th><th>最后修改</th><th>任务</th></tr></thead><tbody>
+<div class="table-wrap"><table><thead><tr><th>题目</th><th>模式</th><th>正文完成</th><th>最后修改（上海时间）</th><th>任务</th></tr></thead><tbody>
 {% for p in projects %}<tr><td><a href="/admin/production/{{ p.id }}">{{ p.brief.title }}</a></td><td>{{ '快速' if p.mode == 'quick' else '精细' }}</td><td>{{ metadata[p.id].completed }}/{{ metadata[p.id].chapter_total }}</td><td>{{ metadata[p.id].updated_at }}</td><td>{% if metadata[p.id].active_job %}<a href="/admin/jobs/{{ metadata[p.id].active_job }}">查看执行任务</a>{% else %}无活动任务{% endif %}</td></tr>{% else %}<tr><td colspan="5">暂无项目。</td></tr>{% endfor %}
-</tbody></table>
+</tbody></table></div>
 <p>共 {{ total }} 项，第 {{ page }} 页。{% if page > 1 %}<a href="?page={{ page-1 }}&archived={{ 1 if archived else 0 }}">上一页</a>{% endif %} {% if page*20 < total %}<a href="?page={{ page+1 }}&archived={{ 1 if archived else 0 }}">下一页</a>{% endif %}</p>
 {% endblock %}
