@@ -351,7 +351,7 @@ def test_snapshot_hash_does_not_change_after_edit(snapshot_ready):
 
 ## Task 12：独立 worker 启动、失联维护与实际重启
 
-**Files:** Modify cli.py、app.py 中仅就绪提示；Create tests/jobs/test_worker_cli.py、tests/production/test_process_restart.py；Extend tests/jobs/fakes.py 的本地假模型传输与 process harness（测试专用，不在生产env开启fake）。
+**Files:** Modify cli.py、jobs/worker.py 中固定 main 入口/协作停止及 app.py 中仅就绪提示；Create tests/jobs/test_worker_cli.py、tests/production/test_process_restart.py；Extend tests/jobs/fakes.py 的本地假模型传输与 process harness（测试专用，不在生产env开启fake）。worker.py 的 main/停止协调用于下述既定接口，不开放任意模块、路径或命令参数。
 
 **Interfaces:** cli 增 worker 子命令（维护用，无任意模块/路径/命令参数）；jobs.worker.main(argv:list[str]|None=None)->int 读取明确配置/同一DB，校验latest6、显式run_forever。启动无owner或旧schema拒绝、不自动迁移；模型未配置时显示安全状态并不执行生成，M1 Web仍可启动。
 
