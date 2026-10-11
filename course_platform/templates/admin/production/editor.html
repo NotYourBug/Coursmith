@@ -1,0 +1,34 @@
+{% extends "admin/base.html" %}
+{% block title %}私有草稿编辑 · 智课工坊{% endblock %}
+{% block content %}
+{% if recovered is defined %}
+<h1>输入未保存</h1><p>服务器内容保持原样。请复制本次输入，然后明确重新读取页面比较；下列仍是提交时的旧修订。</p>
+<p data-error-code="{{ error.code }}">{{ error.code }}</p>
+{% for name,value in old_revisions.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}"><p>旧 {{ name }}：{{ value if value else '空白正文' }}</p>{% endfor %}
+{% for name,value in recovered.items() %}<label>{{ name }}{% if field_errors.get(name) %}<span data-field-error="{{ name }}">{{ field_errors[name] }}</span>{% endif %}<textarea name="{{ name }}" rows="12" readonly>{{ value }}</textarea></label>{% endfor %}
+<p><a href="{{ reload_url }}">明确重新读取页面</a></p>
+{% else %}
+<h1>{{ '生成候选' if candidate is defined else '章节正文编辑' }}</h1><p><a href="/admin/production/{{ project.id }}">返回项目</a> · 私有草稿，人工作业待审核。</p>
+{% if candidate is defined %}
+<p>候选 {{ candidate.id }} · {{ candidate.state }}。采用不会自动发布。</p>
+<label>候选源文 <textarea name="candidate_text" readonly rows="18">{{ candidate_text }}</textarea></label>
+{% if candidate.state == 'pending' %}
+{% if candidate.kind == 'outline' %}
+<p>每个候选位置（从 1 开始）必须明确映射到当前章节 ID 或 null（新章）。不按题目猜测对应关系。</p>
+<form method="post" action="/admin/production/{{ project.id }}/outline/adopt"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ project.revision }}"><input type="hidden" name="candidate_id" value="{{ candidate.id }}"><label>章节对应 JSON <textarea name="matches_json" rows="8">{{ matches_json }}</textarea></label><button type="submit">采用大纲候选</button></form>
+{% else %}
+<label>当前正文 <textarea name="current_markdown" readonly rows="18">{{ chapter.markdown }}</textarea></label>
+<form method="post" action="/admin/production/{{ project.id }}/candidates/{{ candidate.id }}/adopt"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ project.revision }}"><input type="hidden" name="body_revision" value="{{ chapter.body_revision if chapter.body_revision is not none else '' }}"><button type="submit">采用章节候选</button></form>
+{% endif %}
+<form method="post" action="/admin/production/{{ project.id }}/candidates/{{ candidate.id }}/reject"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ project.revision }}"><button type="submit">拒绝候选</button></form>
+{% endif %}
+{% else %}
+<noscript><p>无 JavaScript 时没有离开提醒，请在离开前明确保存。</p></noscript>
+<form method="post" action="/admin/production/{{ project.id }}/chapters/{{ chapter.id }}/save" data-editor-form>
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="body_revision" value="{{ chapter.body_revision if chapter.body_revision is not none else '' }}">
+<label>Markdown 正文（UTF-8 最多 200 KiB）<textarea name="markdown" rows="24">{{ chapter.markdown }}</textarea></label><button type="submit">保存正文</button></form>
+<form method="post" action="/admin/production/{{ project.id }}/chapters/{{ chapter.id }}/regenerate"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ project.revision }}"><input type="hidden" name="idempotency_key" value="{{ idempotency_key }}"><button type="submit">重新生成本章候选</button></form>
+<h2>已保存正文预览</h2><div class="production-preview">{{ preview.html|safe }}</div>{% for finding in preview.findings %}<p>{{ finding.code }}</p>{% endfor %}
+{% endif %}
+{% endif %}
+{% endblock %}

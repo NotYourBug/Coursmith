@@ -163,12 +163,12 @@ def require_owner(request: Request) -> AdminSession:
     return session
 
 
-async def require_admin_post(request: Request) -> tuple[Actor, dict[str, str]]:
+async def require_admin_post(request: Request, *, body_limit: int = 65536) -> tuple[Actor, dict[str, str]]:
     if request.method != "POST":
         raise BusinessError("post_required", "This operation requires POST.", 405)
     session = await run_in_threadpool(require_owner, request)
     check_origin(request, request.app.state.settings.site_origin)
-    form = parse_unique_form(await read_limited_body(request, 65536))
+    form = parse_unique_form(await read_limited_body(request, body_limit, form_limit=body_limit))
     await run_in_threadpool(request.app.state.csrf_service.verify_bound_csrf,
         form.get("csrf_token", ""), request.cookies.get(CSRF_COOKIE, ""), session.csrf_hash,
     )

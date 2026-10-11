@@ -60,6 +60,22 @@ def _initialize(app, settings):
         session_ttl_hours=settings.session_ttl_hours, entitlement_service=rights)
     app.state.progress_service = ProgressService(settings.database_path, clock=clock, entitlement_service=rights)
     app.state.access_service = AccessService(settings.database_path, settings.session_ttl_hours, clock=clock)
+    # Composition is local only: no SDK/Worker construction or maintenance.
+    from .production.config import load_production_settings
+    from .production.projects import ProjectService
+    from .production.drafts import DraftService
+    from .jobs.budget import TokenBudget
+    from .jobs.service import JobService
+    from .jobs.recovery import RecoveryService as JobRecoveryService
+
+    app.state.production_settings = load_production_settings(settings)
+    app.state.production_service = ProjectService(settings.database_path, clock=clock)
+    app.state.draft_service = DraftService(settings.database_path, clock=clock)
+    app.state.token_budget = TokenBudget(settings.database_path, clock=clock)
+    app.state.job_service = JobService(settings.database_path, app.state.draft_service, clock=clock)
+    app.state.job_service.configure_execution(app.state.production_settings, app.state.token_budget)
+    app.state.recovery_job_service = JobRecoveryService(settings.database_path,
+        app.state.job_service, app.state.draft_service, app.state.token_budget, clock=clock)
     settings.content_root.mkdir(parents=True, exist_ok=True)
     for directory in sorted(settings.content_root.iterdir()):
         if not directory.is_dir() or directory.name.startswith("."):
@@ -137,11 +153,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status_code=500, headers={"Cache-Control": "no-store", "X-Request-ID": request.state.request_id,
                                     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'"})
 
-    from .admin.routes import auth, products, codes, orders, entitlements, legacy, dashboard
+    from .admin.routes import auth, products, codes, orders, entitlements, legacy, dashboard, production, jobs
     from .routes import catalog, access, learning
     # Dashboard owns /admin in the composed factory; standalone auth router
     # still has its original home for earlier HTTP consumers.
     for router in (dashboard.router, auth.router, products.router, codes.router, orders.router,
-                   entitlements.router, legacy.router, catalog.router, access.router, learning.router):
+                   entitlements.router, legacy.router, production.router, jobs.router, catalog.router, access.router, learning.router):
         app.include_router(router)
     return app
