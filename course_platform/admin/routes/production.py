@@ -16,6 +16,7 @@ from ...jobs.models import JobRequest
 from ...production.models import BriefInput, OutlineInput, ReferenceInput
 from ...production.checks import validate_draft
 from ...production.rendering import render_markdown
+from ...production.snapshots import SnapshotService
 from .production_forms import ProductionRoute, integer, json_value, owner_objects, protected_post, render
 
 router = APIRouter(prefix="/admin/production", route_class=ProductionRoute)
@@ -61,8 +62,11 @@ def _data(request, project_id):
         chapters = [dict(row) for row in conn.execute("SELECT id,needs_review,review_reason FROM production_chapters WHERE project_id=? AND active=1", (project_id,))]
         jobs = [dict(row) for row in conn.execute("SELECT id,kind,state,reason_code FROM production_jobs WHERE project_id=? ORDER BY id DESC LIMIT 20", (project_id,))]
         categories = [dict(row) for row in conn.execute("SELECT id,name FROM categories ORDER BY id")]
+        snapshots = [dict(row) for row in conn.execute("SELECT id,project_revision,snapshot_hash,created_at FROM production_snapshots WHERE project_id=? ORDER BY id DESC", (project_id,))]
+        last_check = conn.execute("SELECT * FROM draft_checks WHERE project_id=? ORDER BY id DESC LIMIT 1", (project_id,)).fetchone()
     return dict(project=project, frozen=frozen, candidates=candidates, chapter_flags={c["id"]: c for c in chapters},
-        project_jobs=jobs, categories=categories, values=project.brief.model_dump(),
+        project_jobs=jobs, categories=categories, snapshots=snapshots, recorded_check=dict(last_check) if last_check else None,
+        values=project.brief.model_dump(),
         outline_json=json.dumps([item.model_dump() for item in frozen.outline.items] if frozen.outline else [], ensure_ascii=False, indent=2),
         settings=state.production_settings, draft_check=validate_draft(frozen))
 
@@ -268,3 +272,33 @@ async def acknowledge(request: Request, project_id: str):
 def preview(request: Request, project_id: str):
     data = _data(request, integer(project_id, field="identifier"))
     return render(request, "production/preview.html", rendered=[(c, _preview(c.markdown)) for c in data["frozen"].chapters], **data)
+
+
+def _snapshots(request):
+    state = request.app.state
+    return SnapshotService(state.settings.database_path, state.draft_service, clock=state.draft_service.clock)
+
+
+@router.post("/{project_id}/check", name="production_check")
+async def check(request: Request, project_id: str):
+    return await _write(request, project_id, _snapshots(request).check)
+
+
+@router.post("/{project_id}/snapshots", name="production_snapshot_create")
+async def snapshot_create(request: Request, project_id: str):
+    actor, form = await protected_post(request, reload_url=_base(project_id))
+    snapshot = await run_in_threadpool(_snapshots(request).create, actor, integer(project_id, field="identifier"),
+        integer(form.get("revision", "")))
+    return RedirectResponse(_base(project_id) + f"/snapshots/{snapshot.id}", status_code=303)
+
+
+@router.get("/{project_id}/snapshots/{snapshot_id}", name="production_snapshot")
+def snapshot(request: Request, project_id: str, snapshot_id: str):
+    owner_objects(request)
+    service = _snapshots(request)
+    view = service.get(request.state.actor, integer(snapshot_id, field="identifier"))
+    if view.project_id != integer(project_id, field="identifier"):
+        raise BusinessError("snapshot_missing", "此交接快照不属于当前项目。", 404)
+    frozen = service.read_snapshot_payload(view.id)
+    return render(request, "production/snapshot.html", snapshot=view, frozen=frozen,
+        rendered=[(chapter, _preview(chapter.markdown)) for chapter in frozen.chapters])

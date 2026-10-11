@@ -34,6 +34,7 @@ ACTIONS = {
     "production_outline_adopt": "production.candidate", "production_chapter_save": "production.chapter",
     "production_chapter_regenerate": "job.submit", "production_candidate_adopt": "production.candidate",
     "production_candidate_reject": "production.candidate", "production_acknowledge": "production.acknowledge",
+    "production_check": "production.check", "production_snapshot_create": "production.snapshot",
     "production_generate": "job.submit", "job_cancel": "job.cancel", "job_resume": "job.resume",
     "job_reconcile": "job.reconcile", "job_check_interrupted": "job.interrupt", "job_test_connection": "job.submit",
 }

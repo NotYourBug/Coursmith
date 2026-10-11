@@ -109,3 +109,23 @@ def test_audit_uses_admin_foreign_key_and_trusted_actor(db_path, actor):
     record_denial(db_path, event(actor_admin_id=actor.admin_id, request_id=actor.request_id))
     with transaction(db_path) as connection:
         assert connection.execute("SELECT actor_admin_id FROM admin_events").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("action", ["production.check", "production.snapshot"])
+def test_handoff_audit_allows_only_revision_and_safe_denial_code(db_path, action):
+    with transaction(db_path) as connection:
+        append_event(connection, event(action=action, object_type="production", outcome="success",
+            reason="completed", changes={"revision": 3}))
+    record_denial(db_path, event(action=action, object_type="production", changes={"error_code": "snapshot_blocked"}))
+    with transaction(db_path) as connection:
+        rows = connection.execute("SELECT * FROM admin_events ORDER BY id").fetchall()
+        assert [json.loads(row["changes_json"]) for row in rows] == [{"revision": 3}, {"error_code": "snapshot_blocked"}]
+
+
+@pytest.mark.parametrize("action", ["production.check", "production.snapshot"])
+@pytest.mark.parametrize("changes", [{"markdown": "私有正文"}, {"input_hash": "a" * 64},
+    {"findings": "private explanation"}, {"check_ok": True}, {"revision": True}, {"error_code": "private raw error"}])
+def test_handoff_audit_rejects_source_and_approval_metadata(db_path, action, changes):
+    with pytest.raises(BusinessError) as denied:
+        record_denial(db_path, event(action=action, changes=changes))
+    assert denied.value.code == "audit_payload"

@@ -69,6 +69,8 @@ ACTION_FIELDS = {
     "production.chapter": {"revision", "error_code"},
     "production.candidate": {"revision", "error_code"},
     "production.acknowledge": {"revision", "error_code"},
+    "production.check": {"revision", "error_code"},
+    "production.snapshot": {"revision", "error_code"},
     "job.submit": {"revision", "job_state", "error_code"},
     "job.cancel": {"revision", "job_state", "error_code"},
     "job.interrupt": {"revision", "job_state", "error_code"},
