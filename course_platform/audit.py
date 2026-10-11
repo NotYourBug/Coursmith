@@ -72,6 +72,8 @@ ACTION_FIELDS = {
     "job.submit": {"revision", "job_state", "error_code"},
     "job.cancel": {"revision", "job_state", "error_code"},
     "job.interrupt": {"revision", "job_state", "error_code"},
+    "job.reconcile": {"revision", "error_code"},
+    "job.resume": {"revision", "job_state", "error_code"},
     "job.step": {"error_code"},
     "job.finish": {"revision", "job_state", "error_code"},
 }

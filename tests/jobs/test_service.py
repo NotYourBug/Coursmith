@@ -337,10 +337,25 @@ def test_parent_job_must_be_terminal_and_same_project(jobs_context):
     claim = j.repository.claim_next("worker")
     with transaction(j.db_path, immediate=True) as connection:
         j.repository.finish_in_tx(connection, claim, "failed", "model_invalid")
-    result = j.service.submit(j.actor, j.request(kind="outline_generate", project_id=p.id,
-        project_revision=p.revision, parent_job_id=original.id), j.config,
-        idempotency_key="explicit-new-job", reserved_tokens=100)
-    assert result.id != original.id
+    # Parent validation remains a trusted in-transaction guard; public callers
+    # must use explicit recovery, including when the parent is already terminal.
+    with pytest.raises(BusinessError) as foreign:
+        with transaction(j.db_path, immediate=True) as connection:
+            j.service._submit_in_tx(connection, j.actor,
+                j.request(kind="draft_validate", project_id=q.id, project_revision=q.revision,
+                          parent_job_id=original.id), j.config,
+                idempotency_key="foreign-terminal-parent", reserved_tokens=100)
+    assert foreign.value.code == "parent_job_conflict"
+    with pytest.raises(BusinessError) as direct:
+        j.service.submit(j.actor, j.request(kind="outline_generate", project_id=p.id,
+            project_revision=p.revision, parent_job_id=original.id), j.config,
+            idempotency_key="direct-terminal-parent", reserved_tokens=100)
+    assert direct.value.code == "explicit_recovery_required"
+    from course_platform.jobs.recovery import RecoveryService
+    recovery = RecoveryService(j.db_path, j.service, j.drafts, j.budget, clock=j.clock.now)
+    result = recovery.resume(j.actor, original.id, j.service.get(original.id).revision,
+        j.config, idempotency_key="explicit-new-job", reserved_tokens=100, confirm=True)
+    assert result.id != original.id and result.state == "queued"
     assert j.service.get(original.id).state == "failed"
 
 

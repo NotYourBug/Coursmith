@@ -62,6 +62,14 @@ class JobView:
 
 
 @dataclass(frozen=True)
+class RecoveryPreview:
+    unchanged_input: bool
+    completed_chapter_ids: tuple[str, ...]
+    pending_chapter_ids: tuple[str, ...]
+    unknown_call_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class Claim:
     job_id: int
     attempt_id: int
