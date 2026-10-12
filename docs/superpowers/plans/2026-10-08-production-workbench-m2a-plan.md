@@ -351,9 +351,15 @@ def test_snapshot_hash_does_not_change_after_edit(snapshot_ready):
 
 ## Task 12：独立 worker 启动、失联维护与实际重启
 
-**Files:** Modify cli.py、jobs/worker.py 中固定 main 入口/协作停止及 app.py 中仅就绪提示；Create tests/jobs/test_worker_cli.py、tests/production/test_process_restart.py；Extend tests/jobs/fakes.py 的本地假模型传输与 process harness（测试专用，不在生产env开启fake）。worker.py 的 main/停止协调用于下述既定接口，不开放任意模块、路径或命令参数。
+**Files:** Modify cli.py、jobs/worker.py 中固定 main 入口/协作停止、jobs/handlers.py 中现有步骤/请求边界的可选停止检查及 app.py 中仅就绪提示；Create tests/jobs/test_worker_cli.py、tests/production/test_process_restart.py；Extend tests/jobs/fakes.py 的本地假模型传输与 process harness（测试专用，不在生产env开启fake）；Modify course_platform/admin/routes/jobs.py、course_platform/templates/admin/jobs/list.html、course_platform/templates/admin/jobs/detail.html 的只读失联展示；Extend tests/production/test_routes.py 的边界与 GET 无副作用覆盖。停止检查在登记新请求前执行，保留已在途响应的合法落账/内容处理；不开放任意模块、路径或命令参数。
 
 **Interfaces:** cli 增 worker 子命令（维护用，无任意模块/路径/命令参数）；jobs.worker.main(argv:list[str]|None=None)->int 读取明确配置/同一DB，校验latest6、显式run_forever。启动无owner或旧schema拒绝、不自动迁移；模型未配置时显示安全状态并不执行生成，M1 Web仍可启动。
+
+协作停止沿既有 Worker → Handlers.execute 调用传入可选 stop（默认无，原调用兼容），在新步骤/请求的现有栅栏检查；不改变在途结果的租约、取消、来源或用量规则，不因停止虚构 sent 调用记录。
+
+缺密钥或上下文时，显式 worker 以安全 local_only 就绪诊断继续处理既有无模型 draft_validate；生成和连接测试仍经原有逐任务执行配置/额度栅栏拒绝，不创建模型调用或调用预留，不构造 SDK/HTTP 请求。无 owner、旧 schema、无效或不支持的执行配置仍安全拒绝启动。
+
+现有任务 GET 使用同一注入时钟和只读快照，依据活动轮次区分租约到期（60 秒）与心跳中断阈值（120 秒），明确限定持久 running 记录并链接既有显式检查操作。空闲历史心跳不证明进程在线或失联；缺少活动轮次如实显示无法确认。GET 不维护、不续租、不调用模型，不改任务、账本、审计或正文；无新接口、schema 或后台轮询。
 
 - [ ] **Step 1 — RED tests:** test_worker_cli_import_and_help_do_not_start_or_migrate；test_real_web_restart_retains_queued_job_and_draft；test_kill_worker_after_vendor_accept_does_not_replay_on_restart；test_maintenance_fences_after_60_and_marks_after_120；test_stopped_worker_keeps_ui_cancel_and_recovery_available。使用本地真实HTTP假供应商、独立子进程和测试目录，所有网络拒绝离开loopback。
 

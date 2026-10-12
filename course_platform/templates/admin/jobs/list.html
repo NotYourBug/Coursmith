@@ -3,10 +3,13 @@
 {% block content %}
 <h1>任务中心</h1><p>任务完成不代表课程已审核或可销售。本页读取持久状态；<a href="/admin/jobs">手动刷新</a>不会调用模型。</p>
 <p><a href="/admin/jobs/model">模型连接诊断</a> · <a href="/admin/production">制作项目</a></p>
-<form method="post" action="/admin/jobs/check-interrupted"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">检查中断状态</button></form>
+<form id="worker-maintenance" method="post" action="/admin/jobs/check-interrupted"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">检查中断状态</button></form>
 <p>最近明确检查时间：{% if last_maintenance %}<time datetime="{{ last_maintenance }}">{{ display_time(last_maintenance) }}</time>{% else %}尚未记录{% endif %}（上海时间）。此时间并不代表 worker 周期维护时间或发生了任务中断。</p>
-<h2>Worker 心跳</h2>{% for heartbeat in heartbeats %}<p>最近持久心跳 <time datetime="{{ heartbeat.heartbeat_at }}">{{ display_time(heartbeat.heartbeat_at) }}</time> · 任务 {{ heartbeat.job_id or '空闲' }}。心跳时间过期表示异常；页面存在不代表 worker 正常。</p>{% else %}<p>尚无 worker 心跳，排队任务需要维护者启动独立 worker。</p>{% endfor %}
+<h2>Worker 心跳</h2>{% for heartbeat in heartbeats %}
+{% if heartbeat.activity %}<p data-worker-status="{{ heartbeat.activity.status }}"{% if heartbeat.activity.status != 'fresh' %} role="alert"{% endif %}>最近持久心跳 <time datetime="{{ heartbeat.heartbeat_at }}">{{ display_time(heartbeat.heartbeat_at) }}</time> · 任务 {{ heartbeat.job_id }}。{{ heartbeat.activity.message }}任务记录仍为 running。{% if heartbeat.activity.status != 'fresh' %}<a href="#worker-maintenance">检查中断状态</a>后再处理恢复。{% endif %}</p>
+{% else %}<p>历史心跳记录 <time datetime="{{ heartbeat.heartbeat_at }}">{{ display_time(heartbeat.heartbeat_at) }}</time> · 任务 {{ heartbeat.job_id or '空闲' }}。不能据此确认 worker 此刻在线或失联。</p>{% endif %}
+{% else %}<p>尚无 worker 心跳，排队任务需要维护者启动独立 worker。</p>{% endfor %}
 <div class="table-wrap"><table><thead><tr><th>任务</th><th>项目</th><th>类型</th><th>状态</th><th>原因</th><th>创建时间（上海时间）</th></tr></thead><tbody>
-{% for job in jobs %}<tr><td><a href="/admin/jobs/{{ job.id }}">{{ job.id }}</a></td><td>{% if job.project_id %}<a href="/admin/production/{{ job.project_id }}">{{ job.project_id }}</a>{% else %}连接诊断{% endif %}</td><td>{{ job.kind }}</td><td>{{ job.state }}</td><td>{{ job.reason_code or '' }}</td><td><time datetime="{{ job.created_at }}">{{ display_time(job.created_at) }}</time></td></tr>{% else %}<tr><td colspan="6">暂无任务。</td></tr>{% endfor %}
+{% for job in jobs %}<tr><td><a href="/admin/jobs/{{ job.id }}">{{ job.id }}</a></td><td>{% if job.project_id %}<a href="/admin/production/{{ job.project_id }}">{{ job.project_id }}</a>{% else %}连接诊断{% endif %}</td><td>{{ job.kind }}</td><td>{{ job.state }}{% if job.activity %}<p data-worker-status="{{ job.activity.status }}"{% if job.activity.status != 'fresh' %} role="alert"{% endif %}>{{ job.activity.message }}任务记录仍为 running。{% if job.activity.status != 'fresh' %}<a href="#worker-maintenance">检查中断状态</a>后再处理恢复。{% endif %}</p>{% endif %}</td><td>{{ job.reason_code or '' }}</td><td><time datetime="{{ job.created_at }}">{{ display_time(job.created_at) }}</time></td></tr>{% else %}<tr><td colspan="6">暂无任务。</td></tr>{% endfor %}
 </tbody></table></div><p>第 {{ page }} 页。{% if page > 1 %}<a href="?page={{ page-1 }}">上一页</a>{% endif %}{% if jobs|length == 20 %} <a href="?page={{ page+1 }}">下一页</a>{% endif %}</p>
 {% endblock %}

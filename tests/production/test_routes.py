@@ -536,3 +536,101 @@ def test_explicit_maintenance_marker_rechecks_current_enabled_owner(production_d
     response = post(c, "/admin/jobs/check-interrupted")
     assert response.status_code == 403
     assert not maintenance_markers(d)
+
+
+def worker_display_history(data):
+    """Task/source/ledger/audit facts, excluding normal auth/CSRF session reads."""
+    from contextlib import closing
+    from course_platform.database import open_readonly
+
+    with closing(open_readonly(data.db_path)) as conn:
+        conn.execute("BEGIN")
+        return {table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY 1")]
+            for table in ("production_projects", "brief_revisions", "outline_revisions", "chapter_revisions",
+                "production_jobs", "job_attempts", "job_steps", "model_calls", "token_reservations",
+                "worker_heartbeats", "job_requests", "admin_events")}
+
+
+def claimed_display_job(data):
+    queued = post(data.client, f"/admin/production/{data.project_id}/generate",
+        revision=str(data.projects.get(data.project_id).revision), kind="chapters_generate",
+        idempotency_key="expiry-display")
+    assert queued.status_code == 303
+    claim = data.client.app.state.recovery_job_service.repository.claim_next("expiry-worker")
+    assert claim is not None
+    return claim, queued.headers["location"]
+
+
+@pytest.mark.parametrize("age,diagnostic,message", [(59, "fresh", "执行租约有效"),
+    (60, "lease_expired", "执行异常：租约已过期"),
+    (119, "lease_expired", "执行异常：租约已过期"),
+    (120, "heartbeat_overdue", "执行异常：心跳已达到 120 秒未更新")])
+def test_worker_activity_expiry_boundaries_are_readonly(production_data, age, diagnostic, message):
+    from course_platform.production.prompts import build_chapter_request
+
+    d, c = production_data, production_data.client
+    claim, path = claimed_display_job(d)
+    with transaction(d.db_path, immediate=True) as conn:
+        c.app.state.token_budget.begin_call_in_tx(conn, claim,
+            build_chapter_request(claim.input, d.chapter_id, claim.config))
+    d.clock.advance(seconds=age)
+    before = worker_display_history(d)
+    for target in ("/admin/jobs", path):
+        page = c.get(target)
+        assert page.status_code == 200 and page.headers["cache-control"] == "no-store"
+        assert f'data-worker-status="{diagnostic}"' in page.text
+        assert message in page.text
+        if diagnostic == "fresh":
+            assert "执行异常：" not in page.text
+        else:
+            assert "任务记录仍为 running" in page.text
+            assert "正在执行；" not in page.text
+            assert "检查中断状态" in page.text
+            if age < 120:
+                assert "尚未达到 120 秒中断阈值" in page.text
+            else:
+                assert "worker 可能失联" in page.text
+    assert worker_display_history(d) == before
+    assert c.app.state.job_service.get(claim.job_id).state == "running"
+
+
+@pytest.mark.parametrize("terminal", ["succeeded", "failed", "cancelled"])
+def test_worker_history_when_idle_does_not_claim_process_liveness(production_data, terminal):
+    d, c = production_data, production_data.client
+    claim, path = claimed_display_job(d)
+    with transaction(d.db_path, immediate=True) as conn:
+        c.app.state.recovery_job_service.repository.finish_in_tx(conn, claim, terminal, None)
+    d.clock.advance(seconds=1200)
+    before = worker_display_history(d)
+    listed = c.get("/admin/jobs")
+    assert listed.status_code == 200 and "历史心跳记录" in listed.text
+    assert "不能据此确认 worker 此刻在线或失联" in listed.text
+    for page in (listed, c.get(path)):
+        assert page.status_code == 200
+        assert 'data-worker-status="lease_expired"' not in page.text
+        assert 'data-worker-status="heartbeat_overdue"' not in page.text
+        assert "执行异常：" not in page.text
+    assert worker_display_history(d) == before
+
+
+def test_running_job_without_active_attempt_reports_unknown_readonly(production_data):
+    from course_platform.database import to_db_time
+
+    d, c = production_data, production_data.client
+    queued = post(c, f"/admin/production/{d.project_id}/generate", revision="2",
+        kind="chapters_generate", idempotency_key="missing-active-attempt")
+    assert queued.status_code == 303
+    job_id = int(queued.headers["location"].rsplit("/", 1)[1])
+    # Legal queued->running transition deliberately creates an incomplete
+    # active record, whose existence must not be mistaken for a live worker.
+    with transaction(d.db_path, immediate=True) as conn:
+        conn.execute("UPDATE production_jobs SET state='running',revision=revision+1,started_at=? WHERE id=?",
+            (to_db_time(d.clock.now()), job_id))
+    before = worker_display_history(d)
+    for target in ("/admin/jobs", queued.headers["location"]):
+        page = c.get(target)
+        assert page.status_code == 200
+        assert 'data-worker-status="unknown"' in page.text
+        assert "无法确认执行状态：未找到活动轮次" in page.text
+        assert "任务记录仍为 running" in page.text and "正在执行；" not in page.text
+    assert worker_display_history(d) == before

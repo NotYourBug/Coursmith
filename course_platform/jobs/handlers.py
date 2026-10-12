@@ -36,7 +36,7 @@ def release_unused_pool_in_tx(connection: sqlite3.Connection, job_id: int, stamp
 
 
 class Handlers:
-    def __init__(self, claim, *, drafts, repository, budget, model, config):
+    def __init__(self, claim, *, drafts, repository, budget, model, config, stop=None):
         self.claim, self.drafts, self.repository = claim, drafts, repository
         self.budget, self.model, self.config = budget, model, config
         self.frozen = claim.input
@@ -46,11 +46,13 @@ class Handlers:
         self.step_id = None
         self.call_id = None
         self.result = None
+        self.stop = stop
 
     @classmethod
     async def execute(cls, claim: Claim, *, drafts: DraftService, repository: JobRepository,
-                      budget: TokenBudget, model: ModelClient, config: ProductionSettings) -> None:
-        execution = cls(claim, drafts=drafts, repository=repository, budget=budget, model=model, config=config)
+                      budget: TokenBudget, model: ModelClient, config: ProductionSettings,
+                      stop: asyncio.Event | None = None) -> None:
+        execution = cls(claim, drafts=drafts, repository=repository, budget=budget, model=model, config=config, stop=stop)
         try:
             await asyncio.to_thread(execution._prepare)
             await execution._run()
@@ -66,11 +68,13 @@ class Handlers:
                 "response_unknown" if isinstance(error, TimeoutError) else "storage_failure")
             await asyncio.to_thread(execution._fail, code)
 
-    def _fence(self, connection, *, allow_cancel=False):
+    def _fence(self, connection, *, allow_cancel=False, new_work=False):
         self.repository.require_attempt_in_tx(connection, self.claim, self.repository.clock())
         job = connection.execute("SELECT * FROM production_jobs WHERE id=?", (self.claim.job_id,)).fetchone()
         if job["cancel_requested"] and not allow_cancel:
             raise BusinessError("job_cancelled", "任务已请求取消。", 409)
+        if new_work and self.stop is not None and self.stop.is_set():
+            raise BusinessError("worker_stopped", "工作进程正在停止，请明确恢复待处理工作。", 409)
         return job
 
     def _current_matches(self, connection):
@@ -86,7 +90,7 @@ class Handlers:
 
     def _prepare(self):
         with transaction(self.repository.db_path, immediate=True) as connection:
-            job = self._fence(connection)
+            job = self._fence(connection, new_work=True)
             original = self.repository._input(connection, job)
             if original != self.claim.input:
                 raise BusinessError("input_unverified", "执行输入不符合原任务。", 409)
@@ -115,7 +119,7 @@ class Handlers:
 
     def _new_step(self, kind, chapter_id):
         with transaction(self.repository.db_path, immediate=True) as connection:
-            job = self._fence(connection)
+            job = self._fence(connection, new_work=True)
             self._current_matches(connection)
             number = connection.execute("SELECT COUNT(*)+1 FROM job_steps WHERE attempt_id=?",
                                         (self.claim.attempt_id,)).fetchone()[0]
@@ -129,7 +133,7 @@ class Handlers:
 
     def _begin(self, request):
         with transaction(self.repository.db_path, immediate=True) as connection:
-            self._fence(connection)
+            self._fence(connection, new_work=True)
             self._current_matches(connection)
             # The ledger sees this exact own-output-derived full freeze.
             return self.budget.begin_call_in_tx(connection, replace(self.claim, input=self.frozen), request)
@@ -279,7 +283,7 @@ class Handlers:
         requests = tuple(build_chapter_request(self.frozen, cid, self.claim.config) for cid in chapter_ids)
         amount = sum(self.budget.estimate(request) for request in requests)
         with transaction(self.repository.db_path, immediate=True) as connection:
-            self._fence(connection)
+            self._fence(connection, new_work=True)
             self._current_matches(connection)
             self.config.require_execution(self.claim.config)
             pool = connection.execute("SELECT * FROM token_reservations WHERE job_id=? AND call_id IS NULL",

@@ -91,6 +91,7 @@ def _initialize(app, settings):
         sync_course(package.manifest, directory, settings.database_path)
         with transaction(settings.database_path, immediate=True) as connection:
             app.state.product_service.ensure_draft_in_tx(connection, package.manifest.course_id)
+    logger.info("web_ready worker=independent")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

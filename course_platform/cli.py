@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = _PrivateArgumentParser(prog="course-platform")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init-admin", help="initialize the single owner using interactive prompts")
+    subparsers.add_parser("worker", help="explicitly run the independent production worker")
 
     validate = subparsers.add_parser("validate", help="validate a course package")
     validate.add_argument("course_dir", type=Path)
@@ -67,6 +68,11 @@ def main(argv: list[str] | None = None) -> int:
         report = validate_course_package(args.course_dir)
         print(json.dumps({"ok": report.ok, "errors": report.errors, "warnings": report.warnings}, ensure_ascii=False, indent=2))
         return 0 if report.ok else 1
+
+    if args.command == "worker":
+        from .jobs.worker import main as worker_main
+
+        return worker_main([])
 
     settings = load_settings()
     if args.command == "init-admin":

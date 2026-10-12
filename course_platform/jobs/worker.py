@@ -63,15 +63,20 @@ class Worker:
                 return
 
     async def run_once(self) -> bool:
+        return await self._run_once()
+
+    async def _run_once(self, stop: asyncio.Event | None = None) -> bool:
         async with self._lock:
             await asyncio.to_thread(maintain, self.repository, self.budget)
+            if stop is not None and stop.is_set():
+                return False
             claim = await asyncio.to_thread(self.repository.claim_next, self.worker_id)
             if claim is None:
                 return False
             heartbeat = asyncio.create_task(self._heartbeat(claim))
             try:
                 await Handlers.execute(claim, drafts=self.drafts, repository=self.repository,
-                    budget=self.budget, model=self.model, config=self.config)
+                    budget=self.budget, model=self.model, config=self.config, stop=stop)
             finally:
                 heartbeat.cancel()
                 with suppress(asyncio.CancelledError):
@@ -80,8 +85,85 @@ class Worker:
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            if not await self.run_once():
+            if not await self._run_once(stop):
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=1)
                 except TimeoutError:
                     pass
+
+
+async def _operate(worker: Worker) -> None:
+    """Main-thread signal handlers request cooperation without cancelling a send."""
+    import signal
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    previous = {}
+
+    def request_stop(_signal, _frame):
+        loop.call_soon_threadsafe(stop.set)
+
+    try:
+        for number in (signal.SIGINT, signal.SIGTERM):
+            previous[number] = signal.signal(number, request_stop)
+        print('{"status":"worker_ready"}', flush=True)
+        await worker.run_forever(stop)
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Fixed maintenance entry. Help/import never load settings or touch SQLite."""
+    import json
+    import secrets
+    import sqlite3
+    from contextlib import closing
+
+    from ..cli import _PrivateArgumentParser
+    from ..database import LATEST_SCHEMA_VERSION, check_database, open_readonly
+    from ..settings import load_settings
+    from ..production.config import PROMPT_VERSION, load_production_settings, normalize_endpoint
+    from ..production.llm import OpenAIModel
+
+    _PrivateArgumentParser(prog="course-platform worker",
+                          description="Run the independent production worker.").parse_args(argv)
+    try:
+        settings = load_settings()
+        if not settings.database_path.is_file() or check_database(settings.database_path)["version"] != LATEST_SCHEMA_VERSION:
+            raise BusinessError("offline_migration_required", "请先离线备份并明确迁移数据库。", 409)
+        with closing(open_readonly(settings.database_path)) as connection:
+            if not connection.execute("SELECT 1 FROM admins WHERE role='owner' AND enabled=1").fetchone():
+                raise BusinessError("owner_required", "请先明确初始化有效经营者。", 403)
+        config = load_production_settings(settings)
+        try:
+            config.require_execution()
+        except BusinessError as error:
+            if error.code not in ("model_context_missing", "model_not_configured"):
+                raise
+            # Availability must not hide an unsupported execution profile.
+            # The original, incomplete config still reaches every per-job gate.
+            if config.public.provider != "deepseek" or config.public.model != "deepseek-flash" or (
+                config.public.prompt_version != PROMPT_VERSION
+            ) or (config.base_url and normalize_endpoint(config.base_url) not in (
+                "https://api.deepseek.com/", "https://api.deepseek.com/v1/"
+            )):
+                raise BusinessError("model_output_unsupported", "模型执行配置不受支持。", 409) from None
+            print(json.dumps({"status": "local_only", "error": error.code}), flush=True)
+        clock = utc_now
+        worker = Worker(JobRepository(settings.database_path, clock=clock),
+            DraftService(settings.database_path, clock=clock), TokenBudget(settings.database_path, clock=clock),
+            OpenAIModel(config), config, worker_id="worker-" + secrets.token_hex(12), clock=clock)
+        asyncio.run(_operate(worker))
+        return 0
+    except (BusinessError, sqlite3.Error, OSError, ValueError, TypeError) as error:
+        # Never print configured paths, source, argv, credentials or SDK messages.
+        code = error.code if isinstance(error, BusinessError) else "worker_unavailable"
+        print(json.dumps({"error": code}), flush=True)
+        return 1
+    except KeyboardInterrupt:
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

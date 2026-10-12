@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from contextlib import closing
+from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Request
@@ -10,7 +11,7 @@ from fastapi.responses import RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 from ...audit import AuditEvent, append_event
-from ...database import open_readonly, transaction
+from ...database import from_db_time, open_readonly, transaction
 from ...domain import BusinessError
 from ...jobs.models import JobRequest
 from ...production.llm import Usage
@@ -20,6 +21,19 @@ from .production_forms import ProductionRoute, integer, owner_objects, protected
 
 router = APIRouter(prefix="/admin/jobs", route_class=ProductionRoute)
 STOPPED = ("failed", "cancelled", "interrupted")
+
+
+def _worker_activity(state: str, heartbeat_at: str | None, lease_until: str | None, now: datetime) -> dict | None:
+    """Advisory active-attempt expiry; reads never renew or interrupt work."""
+    if state != "running":
+        return None
+    if heartbeat_at is None or lease_until is None:
+        return dict(status="unknown", message="无法确认执行状态：未找到活动轮次。")
+    if (now - from_db_time(heartbeat_at)).total_seconds() >= 120:
+        return dict(status="heartbeat_overdue", message="执行异常：心跳已达到 120 秒未更新，worker 可能失联。")
+    if now >= from_db_time(lease_until):
+        return dict(status="lease_expired", message="执行异常：租约已过期；尚未达到 120 秒中断阈值。")
+    return dict(status="fresh", message="执行租约有效；这是持久记录的只读判断。")
 
 
 def readonly_job_metadata(request: Request, job_id: int) -> dict:
@@ -43,6 +57,9 @@ def readonly_job_metadata(request: Request, job_id: int) -> dict:
             WHERE c.job_id=? ORDER BY c.id""", (job_id,))]
         history = [dict(r) for r in conn.execute("SELECT call_id,input_tokens,output_tokens,accept_retry_risk,created_at FROM job_requests WHERE job_id=? AND action='reconcile' ORDER BY id", (job_id,))]
         original = json.loads(row["input_json"])
+        active = next((attempt for attempt in attempts if attempt["state"] == "running"), {})
+        activity = _worker_activity(job["state"], active.get("heartbeat_at"), active.get("lease_until"),
+            state.recovery_job_service.repository.clock())
     unknown_exposure = 0
     for call in calls:
         call["resolved"] = call["input_tokens"] is not None and call["used_tokens"] == call["input_tokens"] + call["output_tokens"]
@@ -90,7 +107,7 @@ def readonly_job_metadata(request: Request, job_id: int) -> dict:
         can_resume = False
     return dict(job=job, children=children, attempts=attempts, steps=steps, calls=calls, reconciliation_history=history,
         recovery=preview, recovery_error=recovery_error, candidate_only=candidate_only, can_resume=can_resume,
-        fresh_reserve=fresh_reserve, unknown_exposure=unknown_exposure, child_kind=child_kind, display_time=_local_time)
+        fresh_reserve=fresh_reserve, unknown_exposure=unknown_exposure, child_kind=child_kind, activity=activity, display_time=_local_time)
 
 
 @router.get("", name="job_list")
@@ -100,12 +117,25 @@ def jobs(request: Request):
     if page > 9223372036854775807 // 20:
         raise BusinessError("invalid_page", "分页参数无效。", 400)
     with closing(open_readonly(request.app.state.settings.database_path)) as conn:
-        listed = [dict(row) for row in conn.execute("SELECT id,project_id,kind,state,reason_code,created_at FROM production_jobs WHERE actor_admin_id=? ORDER BY id DESC LIMIT 20 OFFSET ?",
+        conn.execute("BEGIN")
+        now = request.app.state.recovery_job_service.repository.clock()
+        listed = [dict(row) for row in conn.execute("""SELECT j.id,j.project_id,j.kind,j.state,j.reason_code,j.created_at,
+            a.heartbeat_at AS attempt_heartbeat,a.lease_until FROM production_jobs j
+            LEFT JOIN job_attempts a ON a.job_id=j.id AND a.state='running'
+            WHERE j.actor_admin_id=? ORDER BY j.id DESC LIMIT 20 OFFSET ?""",
             (request.state.actor.admin_id, (page - 1) * 20))]
-        heartbeats = [dict(row) for row in conn.execute("SELECT heartbeat_at,job_id FROM worker_heartbeats ORDER BY heartbeat_at DESC")]
+        heartbeats = [dict(row) for row in conn.execute("""SELECT h.heartbeat_at,h.job_id,j.state AS job_state,
+            a.heartbeat_at AS attempt_heartbeat,a.lease_until FROM worker_heartbeats h
+            LEFT JOIN production_jobs j ON j.id=h.job_id
+            LEFT JOIN job_attempts a ON a.id=h.attempt_id AND a.job_id=h.job_id AND a.state='running'
+            ORDER BY h.heartbeat_at DESC""")]
         last_check = conn.execute("""SELECT created_at FROM admin_events WHERE action='job.interrupt'
             AND object_type='job' AND object_id='maintenance' AND reason='maintenance_checked'
             AND outcome='success' ORDER BY id DESC LIMIT 1""").fetchone()
+    for job in listed:
+        job["activity"] = _worker_activity(job["state"], job["attempt_heartbeat"], job["lease_until"], now)
+    for heartbeat in heartbeats:
+        heartbeat["activity"] = _worker_activity(heartbeat["job_state"], heartbeat["attempt_heartbeat"], heartbeat["lease_until"], now)
     return render(request, "jobs/list.html", jobs=listed, page=page, heartbeats=heartbeats,
         last_maintenance=last_check["created_at"] if last_check else None, display_time=_local_time)
 

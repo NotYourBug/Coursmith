@@ -8,7 +8,8 @@
 {% else %}
 <h1>任务 {{ job.id }}</h1><p>{{ job.kind }} · {{ job.state }} · 任务修订 {{ job.revision }}。{{ job.reason_code or '' }}</p><p><a href="/admin/jobs/{{ job.id }}">手动刷新任务</a> · <a href="/admin/jobs">任务中心</a>{% if job.project_id %} · <a href="/admin/production/{{ job.project_id }}">项目 {{ job.project_id }}</a>{% endif %}</p>
 <p>时间均为上海时间：创建 <time datetime="{{ job.created_at }}">{{ display_time(job.created_at) }}</time> · 开始 {{ display_time(job.started_at) }} · 结束 {{ display_time(job.finished_at) }}。</p>
-<p>{% if job.state == 'succeeded' %}生成完成（该任务目标已完成）；{% elif job.state == 'failed' %}任务失败，保留已完成步骤；{% elif job.state == 'queued' %}任务排队，尚未调用模型；{% elif job.state == 'running' %}正在执行；{% elif job.state == 'cancelled' %}任务已取消，已发调用仍可能计费；{% else %}任务中断，需明确处理；{% endif %}草稿结构通过和人工待审核在项目页分别显示，任务完成不会公开课程。</p>
+<p>{% if job.state == 'succeeded' %}生成完成（该任务目标已完成）；{% elif job.state == 'failed' %}任务失败，保留已完成步骤；{% elif job.state == 'queued' %}任务排队，尚未调用模型；{% elif job.state == 'running' %}任务记录仍为 running；{% elif job.state == 'cancelled' %}任务已取消，已发调用仍可能计费；{% else %}任务中断，需明确处理；{% endif %}草稿结构通过和人工待审核在项目页分别显示，任务完成不会公开课程。</p>
+{% if activity %}<p data-worker-status="{{ activity.status }}"{% if activity.status != 'fresh' %} role="alert"{% endif %}>{{ activity.message }}{% if activity.status != 'fresh' %}<a href="/admin/jobs#worker-maintenance">检查中断状态</a>后再处理恢复。{% endif %}</p>{% endif %}
 {% if job.reason_code in ['token_budget_exceeded','model_context_exceeded'] %}<p>请减少章节数或参考输入，或联系维护者调整额度；系统不会截断资料或自动提高预留上限。</p>{% endif %}
 {% if job.parent_job_id %}<p>原任务 <a href="/admin/jobs/{{ job.parent_job_id }}">{{ job.parent_job_id }}</a></p>{% endif %}
 {% if children %}<p>原任务已有恢复任务，请从关联任务继续处理：</p><ul>{% for child in children %}<li><a href="/admin/jobs/{{ child.id }}">恢复任务 {{ child.id }} · {{ child.state }}</a></li>{% endfor %}</ul>{% endif %}
