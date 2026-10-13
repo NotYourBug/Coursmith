@@ -12,7 +12,7 @@ from test_migrations import populated_v2  # noqa: F401
 from frozen_original_access import AccessService
 from course_platform.admin.auth import AdminService
 from course_platform.content import CourseManifest
-from course_platform.database import (backup_database, check_database, connect,
+from course_platform.database import (LATEST_SCHEMA_VERSION, backup_database, check_database, connect,
     initialize_database, migrate_database, sync_course, to_db_time, transaction)
 from course_platform.delivery.entitlements import EntitlementService
 from course_platform.delivery.progress import ProgressService
@@ -108,13 +108,13 @@ def test_legacy_sessions_are_never_merged_or_extended(original, tmp_path, clock)
     assert rows(original.db, "SELECT created_by, access_days, update_policy, status FROM products") == [
         dict(created_by=None, access_days=None, update_policy=None, status="draft")]
     assert rows(original.db, "SELECT count(*) AS n FROM admins") == [dict(n=0)]
-    assert check_database(original.db)["version"] == 5
+    assert check_database(original.db)["version"] == LATEST_SCHEMA_VERSION
     rights, _, progress = services(original, clock)
     assert progress.get_progress(original.sessions[0].session_id, original.course) == {1: True}
     with pytest.raises(BusinessError):
         rights.redeem(original.unused, expected_course_id=original.course, request_id="unverified")
     unchanged = original.db.read_bytes()
-    assert migrate_database(original.db).to_version == 5
+    assert migrate_database(original.db).to_version == LATEST_SCHEMA_VERSION
     assert original.db.read_bytes() == unchanged
 
 
@@ -246,7 +246,7 @@ def test_legacy_migration_failure_can_restore_backup(original, tmp_path, monkeyp
     backup_database(tmp_path / "before-v5.db", restored)
     monkeypatch.setattr(v005_legacy_delivery, "apply", original_apply)
     migrate_database(restored, backup_path=tmp_path / "restored-before.db")
-    assert check_database(restored) == dict(version=5, integrity="ok", foreign_keys="ok")
+    assert check_database(restored) == dict(version=LATEST_SCHEMA_VERSION, integrity="ok", foreign_keys="ok")
     assert len(rows(restored, "SELECT * FROM entitlement_progress")) == 3
 
 
@@ -254,10 +254,10 @@ def test_installed_latest_owner_and_offline_command(original, tmp_path, clock, m
     from course_platform import cli
     monkeypatch.setattr(cli, "load_settings", lambda: SimpleNamespace(database_path=original.db))
     assert cli.main(["migrate", "--backup", str(tmp_path / "cli-backup.db")]) == 0
-    assert json.loads(capsys.readouterr().out)["to_version"] == 5
+    assert json.loads(capsys.readouterr().out)["to_version"] == LATEST_SCHEMA_VERSION
     owner_setup(original, clock)
     assert cli.main(["migrate", "--check-only"]) == 0
-    assert json.loads(capsys.readouterr().out)["version"] == 5
+    assert json.loads(capsys.readouterr().out)["version"] == LATEST_SCHEMA_VERSION
 
 
 @pytest.mark.parametrize("choice", [None, 0, 366, True, 1.5, 7])
@@ -570,7 +570,8 @@ def test_populated_v4_upgrade_preserves_existing_rights_and_storage(populated_v2
         dict(created_by=None, status="draft", access_days=None, update_policy=None)]
     assert operations_snapshot(tmp_path / "before-five.db") == before
     assert after["schema_migrations"][:4] == before["schema_migrations"]
-    assert after["schema_migrations"][-1][0] == 5
+    assert after["schema_migrations"][-2][0] == 5
+    assert after["schema_migrations"][-1][0] == LATEST_SCHEMA_VERSION
     assert check_database(populated_v2)["foreign_keys"] == "ok"
 
 

@@ -188,10 +188,19 @@ class ProcessHarness:
 
     def write_clock(self):
         import os
+        import time
 
         pending = self.clock_path.with_suffix(".next")
         pending.write_text(self.clock.now().isoformat(), encoding="utf-8")
-        os.replace(pending, self.clock_path)
+        for attempt in range(151):
+            try:
+                os.replace(pending, self.clock_path)
+                return
+            except PermissionError:
+                if os.name != "nt" or attempt == 150:
+                    raise
+                # A Windows reader can briefly prevent replacing the old file.
+                time.sleep(.02)
 
     def rows(self, query, parameters=()):
         from contextlib import closing
@@ -241,8 +250,11 @@ class ProcessHarness:
         # Windows hidden children have no console for CTRL_BREAK delivery. The
         # test-only bridge raises a genuine CRT signal in the child. It neither
         # calls Worker.stop nor replaces the production signal handler.
-        process.task12_control.write_text(name, encoding="ascii")
-        assert wait_until(process.task12_proof.exists), "Child did not raise the requested OS signal"
+        pending = process.task12_control.with_suffix(".pending")
+        pending.write_text(name, encoding="ascii")
+        pending.replace(process.task12_control)
+        assert wait_until(lambda: process.task12_proof.exists() and
+                          process.task12_proof.read_text(encoding="ascii")), "Child did not raise the requested OS signal"
         return process.task12_proof.read_text(encoding="ascii")
 
     def stop(self, process, *, kill=False):

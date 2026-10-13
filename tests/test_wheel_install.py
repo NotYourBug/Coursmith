@@ -1,5 +1,6 @@
 """The installed artifact must deliver every consumer without source fallback."""
 import os
+import json
 from pathlib import Path
 import shutil
 import re
@@ -22,8 +23,11 @@ def installed_release(tmp_path_factory):
     env["PYTHONUTF8"] = "1"
     built = subprocess.run([sys.executable, "-X", "utf8", "-m", "build", "--wheel", "--outdir", str(outside / "dist")],
                            cwd=root, env=env, capture_output=True, text=True, timeout=180)
+    (outside / "wheel-build.log").write_text(built.stdout + built.stderr, encoding="utf8")
     assert built.returncode == 0, "Wheel build environment failed: " + built.stderr[-2000:]
-    wheel = next((outside / "dist").glob("*.whl"))
+    wheels = list((outside / "dist").glob("*.whl"))
+    assert len(wheels) == 1, "Wheel build environment did not produce exactly one installable artifact"
+    wheel = wheels[0]
     with zipfile.ZipFile(wheel) as archive:
         shipped = set(archive.namelist())
     required = {path.relative_to(root).as_posix() for directory in ("templates", "static", "migrations")
@@ -33,13 +37,18 @@ def installed_release(tmp_path_factory):
     assert not any(name.startswith("tests/") or "frozen_original_access" in name for name in shipped)
     subprocess.run([sys.executable, "-m", "venv", str(outside / ".venv")], check=True, timeout=60)
     python = outside / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    install_args = [str(python), "-m", "pip", "install", "--timeout", "10", "--retries", "1"]
+    install_args = [str(python), "-m", "pip", "--isolated", "install", "--no-cache-dir", "--timeout", "10", "--retries", "1"]
     if env.get("COURSMITH_WHEELHOUSE"):
         install_args += ["--no-index", "--find-links", env["COURSMITH_WHEELHOUSE"]]
-    installed = subprocess.run(install_args + ["-c", str(root / "docs/operations/task12-validated-requirements.txt"),
-                                               str(wheel), "httpx2==2.13.1"],
+    command = install_args + ["-c", str(root / "docs/operations/m2a-validated-requirements.txt"), str(wheel), "httpx2==2.13.1"]
+    installed = subprocess.run(command,
                                cwd=outside, env=env, capture_output=True, text=True, timeout=240)
+    (outside / "wheel-install.log").write_text(installed.stdout + installed.stderr, encoding="utf8")
+    (outside / "wheel-install-proof.json").write_text(json.dumps({"command": command, "cwd": str(outside),
+        "pythonpath_present": "PYTHONPATH" in env, "wheel": str(wheel), "build_exit": built.returncode,
+        "install_exit": installed.returncode}, indent=2), encoding="utf8")
     assert installed.returncode == 0, "Fresh installation environment failed: " + installed.stderr[-2000:]
+    print(f"Actual fresh wheel install exit0; source fallback disabled; evidence: {outside}")
     return outside, python, wheel, env
 
 
@@ -92,7 +101,7 @@ def test_runbook_operational_commands_use_the_installed_environment(installed_re
         with server_factory(content, db, python=exe, cwd=outside, cli=cli) as site:
             import httpx
             assert httpx.get(site.url + "/help", trust_env=False, timeout=10).status_code == 200
-    print("Documented unactivated-shell interpreter, latest5 CLI inspection, init-admin help, installed CLI/factory sockets passed")
+    print(f"Documented unactivated-shell interpreter, latest{LATEST_SCHEMA_VERSION} CLI inspection, init-admin help, installed CLI/factory sockets passed")
 
 
 @pytest.mark.packaging

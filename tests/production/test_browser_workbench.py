@@ -43,7 +43,7 @@ def test_title_only_to_draft_and_precise_confirmation(workbench_context, workben
     assert not frozen.outline.confirmed
     assert len(model.calls) == 11
     page.goto(f"{site.url}/admin/production/{project_id}")
-    expect(page.get_by_text("结构检查通过", exact=False)).to_be_visible()
+    expect(page.get_by_text("正文生成或编辑完整；结构检查通过；人工待审核。结构通过不说明事实、来源或教学价值已审核。", exact=True)).to_be_visible()
     expect(page.get_by_text("人工待审核", exact=False).first).to_be_visible()
     precise_id = create_workbench_project(page, site, title="精细课程", mode="precise")
     generate_form = page.locator('form[action$="/generate"]')

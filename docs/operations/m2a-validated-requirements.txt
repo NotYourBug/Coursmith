@@ -1,14 +1,82 @@
-# Task 4 dependencies installed and behavior-validated on Windows amd64,
-# Python 3.11.9, 2026-10-09. These are incremental M2A additions, not the
-# complete platform/runtime installation requirements (see pyproject.toml).
-# Exact direct dependencies:
+# M2A Task13 complete Windows amd64 / Python 3.11.9 installed-wheel constraints.
+# Runtime versions observed in the actual fresh offline install on 2026-10-12.
+# Install the product wheel with -c: constraints do not install optional tools.
+# Complete public wheelhouse also includes the developer tools listed below.
+# pip24 / setuptools65.5 are venv seeds, not the isolated build backend;
+# wheel builds use setuptools84.0.0 (requires >=75) / wheel0.48.0.
+# Historical Task4 additions: markdown-it-py4.2.0, nh30.3.7, mdurl0.1.2;
+# html=False, explicit cleaner allowlists; earlier baseline versions retained then.
+# Current source venv differs in MarkupSafe3.0.3/tzdata2026.3/websockets17.1;
+# fresh installed versions below are3.0.4/2026.5/17.2, not a source-env upgrade.
+# Existing pyproject baseline already required tzdata>=2026.1.
+zhike-course-platform==0.1.0
+Jinja2==3.1.6
+MarkupSafe==3.0.4
+PySocks==1.7.1
+PyYAML==6.0.3
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+argon2-cffi==25.1.0
+argon2-cffi-bindings==26.1.0
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+click==8.5.0
+colorama==0.4.6
+distro==1.9.0
+fastapi==0.142.2
+greenlet==3.5.6
+h11==0.16.0
+httpcore==1.0.9
+httpcore2==2.13.1
+httptools==0.8.0
+httpx==0.28.1
+httpx2==2.13.1
+idna==3.20
+jiter==0.17.0
+openai==2.54.0
+opentelemetry-api==1.45.0
+outcome==1.3.0.post0
+pip==24.0
+playwright==1.63.0
+pwdlib==0.3.1
+pycparser==3.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+pyee==13.0.1
+python-dotenv==1.2.4
+selenium==4.50.0
+setuptools==65.5.0
+sniffio==1.3.1
+sortedcontainers==2.4.0
+starlette==1.7.0
+tinycss2==1.5.1
+tqdm==4.70.1
+trio==0.34.0
+trio-websocket==0.12.2
+truststore==0.10.4
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+tzdata==2026.5
+urllib3==2.8.0
+uvicorn==0.54.0
+watchfiles==1.3.0
+webencodings==0.6.1
+websocket-client==1.9.2
+websockets==17.2
+wsproto==1.3.2
+build==1.6.1
+coverage==7.16.2
+cryptography==49.0.0
+iniconfig==2.3.0
+packaging==26.3
+pluggy==1.6.0
+Pygments==2.21.0
+pyproject_hooks==1.3.3
+pytest==8.4.2
+pytest-cov==6.3.0
+ruff==0.16.10
 markdown-it-py==4.2.0
 nh3==0.3.7
-# New transitive dependency of markdown-it-py:
 mdurl==0.1.2
-# Inventory comparison: every previously installed distribution retained
-# its exact version. pip check: no broken requirements.
-# MarkdownIt commonmark + html=False + table; nh3.clean explicit tags,
-# attributes, HTTP(S) URLs, deny relative URLs, noopener noreferrer.
-# Tests: tests/production/test_rendering.py and test_checks.py.
-# Long browser/fresh-wheel acceptance remains the final branch gate.

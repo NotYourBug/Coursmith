@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from course_platform.app import create_app
-from course_platform.database import backup_database, check_database, open_readonly, transaction
+from course_platform.database import LATEST_SCHEMA_VERSION, backup_database, check_database, open_readonly, transaction
 from course_platform.domain import Actor
 from course_platform.operations.codes import BatchInput, CodeService
 from course_platform.operations.products import AccessPolicy, ProductService, SalesChannel, SalesChecklist
@@ -89,7 +89,7 @@ def test_runbook_pre_v5_conversion_uses_matched_copied_bytes(original_restore_hi
                 assert result.returncode == 0, "Documented offline conversion failed"
                 executed.append("migration")
         assert executed == ["relocation", "migration"], "Historical conversion must follow verified copied-only relocation"
-        assert check_database(db)["version"] == 5 and check_database(db)["foreign_keys"] == "ok"
+        assert check_database(db)["version"] == LATEST_SCHEMA_VERSION and check_database(db)["foreign_keys"] == "ok"
         with closing(open_readonly(db)) as c:
             assert {tuple(row) for row in c.execute("SELECT content_available,package_hash FROM legacy_entitlement_origins")} == {(1, fingerprint)}
             assert [tuple(row) for row in c.execute("SELECT session_hash,course_id,created_at,expires_at FROM sessions ORDER BY rowid")] == before["sessions"]
@@ -184,6 +184,19 @@ POST_ROUTES = [
     "/admin/orders/{order_id}/attach-code", "/admin/orders/{order_id}/refund", "/admin/entitlements/{entitlement_id}/reset-credential",
     "/admin/entitlements/{entitlement_id}/revoke", "/admin/legacy-codes/{code_id}/resolve", "/admin/entitlements/{entitlement_id}/verify-legacy",
     "/access/redeem", "/access/restore", "/learn/{slug}/chapters/{number}/progress", "/api/progress",
+    "/admin/production/new", "/admin/production/{project_id}/brief", "/admin/production/{project_id}/mode",
+    "/admin/production/{project_id}/archive", "/admin/production/{project_id}/references/save",
+    "/admin/production/{project_id}/references/{reference_id}/remove", "/admin/production/{project_id}/outline/save",
+    "/admin/production/{project_id}/outline/confirm", "/admin/production/{project_id}/outline/adopt",
+    "/admin/production/{project_id}/chapters/{chapter_id}/save",
+    "/admin/production/{project_id}/chapters/{chapter_id}/regenerate",
+    "/admin/production/{project_id}/candidates/{candidate_id}/adopt",
+    "/admin/production/{project_id}/candidates/{candidate_id}/reject",
+    "/admin/production/{project_id}/acknowledge", "/admin/production/{project_id}/generate",
+    "/admin/production/{project_id}/check", "/admin/production/{project_id}/snapshots",
+    "/admin/jobs/{job_id}/cancel", "/admin/jobs/{job_id}/resume",
+    "/admin/jobs/{job_id}/calls/{call_id}/reconcile", "/admin/jobs/check-interrupted",
+    "/admin/jobs/model/test-connection",
 ]
 
 
@@ -234,7 +247,8 @@ def test_every_mutating_route_rejects_missing_csrf(ready_site):
             client.get("/access")
             for template in POST_ROUTES:
                 path = template.format(number=1, product_id=1, category_id=1, code_id=spare_id, batch_id=2, order_id=1,
-                                       entitlement_id=1, slug="fixture-course")
+                                       entitlement_id=1, slug="fixture-course", project_id=1, reference_id=1,
+                                       chapter_id="chapter-1", candidate_id=1, job_id=1, call_id=1)
                 data = dict(revision="1", idempotency_key="missing-csrf", confirm="on", code=code, credential=key,
                     course_slug="fixture-course", chapter_number=1, completed=True, username="owner", password="example-pass-123")
                 before = snapshot(site.db)
@@ -462,7 +476,7 @@ def test_matched_copied_database_and_content_restore_reads_relocated_bytes(ready
     exec(compile(code, "runbook-latest5-relocation", "exec"), {})
     after = snapshot(backup, all_tables)
     assert {k:v for k,v in after.items() if k != "courses"} == {k:v for k,v in before.items() if k != "courses"}
-    assert check_database(backup)["foreign_keys"] == "ok" and check_database(backup)["version"] == 5
+    assert check_database(backup)["foreign_keys"] == "ok" and check_database(backup)["version"] == LATEST_SCHEMA_VERSION
     assert site.content.exists() and copied.resolve() != site.content.resolve()
     # Original bytes become unavailable while the original directory still exists.
     original_chapter = site.content / "fixture-course" / "lessons/unit/intro.html"
@@ -577,7 +591,7 @@ def test_offline_old_database_restore_preserves_independent_unavailable_history(
         c.execute("UPDATE courses SET content_path=? WHERE course_id=?", (str(copied.resolve()), original.course))
         c.execute("UPDATE courses SET content_path=? WHERE course_id='missing'", (str((restored/'content'/'unavailable').resolve()),))
     migrated = migrate_database(db, backup_path=restored / "before-v5.db")
-    assert migrated.to_version == 5 and check_database(db)["foreign_keys"] == "ok"
+    assert migrated.to_version == LATEST_SCHEMA_VERSION and check_database(db)["foreign_keys"] == "ok"
     assert snapshot(compatible, tuple(source_before)) == source_before
     with closing(open_readonly(db)) as c:
         for old_session in source_before["sessions"]:

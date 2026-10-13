@@ -377,7 +377,7 @@ def test_worker_help_uses_fixed_entrypoint(worker_help_result):
 
 ## Task 13：安装、恢复、隐私扫描和整批交接
 
-**Files:** Create docs/operations/m2a-runbook.md、tests/production/test_installed_workbench.py、test_restore.py、test_privacy.py；Modify Task4依赖记录与现有 tests/test_wheel_install.py 的本期安装覆盖、CLAUDE.md 的新旧入口说明；不改旧M1 runbook为虚假的M2实测报告。
+**Files:** Create docs/operations/m2a-runbook.md、tests/production/test_installed_workbench.py、test_restore.py、test_privacy.py、tests/jobs/__init__.py（仅包标记，解决全量 pytest 中 jobs/M1 同名 test_recovery 的真实收集冲突）；Modify Task4依赖记录与现有 tests/test_wheel_install.py 的本期安装覆盖、CLAUDE.md 的新旧入口说明；全量验收纠正仅限现有 tests/jobs/fakes.py、tests/test_admin_auth.py、tests/test_legacy_delivery.py、tests/test_release_safety.py 的已证实测试夹具竞态、latest6期望与新增POST安全清单，保留原有严格恢复409断言；tests/production/test_browser_workbench.py 仅将当前完整生成/结构/人工待审核段落改为严格完整匹配，解决新增历史检查段落导致的已复现定位歧义；不改旧M1 runbook为虚假的M2实测报告。
 
 **Interfaces:** Consumes真实CLI、Web factory、worker、backup_database、read_snapshot_payload，无新业务接口；记录实际依赖、Python/浏览器版本、测试结果与限制。
 
