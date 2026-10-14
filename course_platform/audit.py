@@ -59,6 +59,25 @@ ACTION_FIELDS = {
     "recovery.reset": {"revoked_sessions", "revision", "error_code"},
     "session.revoke": {"revoked_sessions", "error_code"},
     "legacy.verify": {"revision", "error_code"},
+    "production.create": {"revision", "error_code"},
+    "production.update": {"revision", "error_code"},
+    "production.reference": {"revision", "error_code"},
+    "production.mode": {"revision", "error_code"},
+    "production.archive": {"revision", "error_code"},
+    "production.outline": {"revision", "error_code"},
+    "production.confirm": {"revision", "error_code"},
+    "production.chapter": {"revision", "error_code"},
+    "production.candidate": {"revision", "error_code"},
+    "production.acknowledge": {"revision", "error_code"},
+    "production.check": {"revision", "error_code"},
+    "production.snapshot": {"revision", "error_code"},
+    "job.submit": {"revision", "job_state", "error_code"},
+    "job.cancel": {"revision", "job_state", "error_code"},
+    "job.interrupt": {"revision", "job_state", "error_code"},
+    "job.reconcile": {"revision", "error_code"},
+    "job.resume": {"revision", "job_state", "error_code"},
+    "job.step": {"error_code"},
+    "job.finish": {"revision", "job_state", "error_code"},
 }
 _SAFE_IDENTIFIER = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 _CREDENTIAL = re.compile(r"(?:CS|LK)-[A-Za-z0-9_-]+")
@@ -83,6 +102,8 @@ def _validate(event: AuditEvent) -> str:
     for key, value in event.changes.items():
         if key == "error_code":
             valid = isinstance(value, str) and _SAFE_IDENTIFIER.fullmatch(value)
+        elif key == "job_state":
+            valid = type(value) is str and value in ("queued", "running", "succeeded", "failed", "cancelled", "interrupted")
         elif key == "status":
             valid = value in ("draft", "active", "paused", "archived", "paid", "refunded")
         elif key == "update_policy":

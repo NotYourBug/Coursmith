@@ -1,0 +1,165 @@
+"""Strict production inputs and immutable service views."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .briefs import brief_text_total, source_text, title_text
+
+
+class BriefInput(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    audience: str = Field(default="", max_length=2000)
+    prerequisites: str = Field(default="", max_length=2000)
+    goal: str = Field(default="", max_length=2000)
+    difficulty: str = Field(default="", max_length=2000)
+    chapter_count: int = Field(default=10, ge=1, le=60)
+    category_id: int | None = Field(default=None, ge=1, le=9223372036854775807)
+    content_kind: Literal["course", "guide", "handbook"] = "course"
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        return title_text(value)
+
+    @field_validator("audience", "prerequisites", "goal", "difficulty")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        return source_text(value)
+
+    @model_validator(mode="after")
+    def validate_total(self) -> BriefInput:
+        brief_text_total(self.title, self.audience, self.prerequisites, self.goal, self.difficulty)
+        return self
+
+
+class ReferenceInput(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    text: str = Field(max_length=20000)
+    source_note: str = Field(default="", max_length=1000)
+    source_status: Literal["unprovided", "pending", "owner_noted"] = "unprovided"
+
+    @field_validator("text", "source_note")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        return source_text(value)
+
+    @model_validator(mode="after")
+    def validate_source_status(self) -> ReferenceInput:
+        if not self.source_note.strip() and self.source_status != "unprovided":
+            raise ValueError("A source explanation is required for this source status.")
+        return self
+
+
+@dataclass(frozen=True)
+class ProjectView:
+    id: int
+    revision: int
+    mode: str
+    status: str
+    brief_revision: int
+    brief: BriefInput
+
+
+@dataclass(frozen=True)
+class ReferenceView:
+    id: int
+    revision: int
+    data: ReferenceInput
+
+
+class OutlineItem(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    chapter_id: str | None
+    title: str = Field(min_length=1, max_length=200)
+    goal: str = Field(max_length=2000)
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        return title_text(value)
+
+    @field_validator("goal")
+    @classmethod
+    def validate_goal(cls, value: str) -> str:
+        return source_text(value)
+
+
+class OutlineInput(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    items: list[OutlineItem] = Field(min_length=1, max_length=60)
+
+
+@dataclass(frozen=True)
+class OutlineView:
+    id: int
+    revision: int
+    project_id: int
+    items: tuple[OutlineItem, ...]
+    confirmed: bool
+
+
+@dataclass(frozen=True)
+class ChapterView:
+    id: str
+    body_revision: int | None
+    markdown: str
+
+
+@dataclass(frozen=True)
+class GeneratedResult:
+    kind: str
+    revision_id: int
+    candidate_id: int | None
+
+
+@dataclass(frozen=True)
+class FrozenReference:
+    id: int
+    revision: int
+    data: ReferenceInput
+
+
+@dataclass(frozen=True)
+class ProductionInput:
+    project_id: int
+    project_revision: int
+    mode: str
+    brief_revision: int
+    brief: BriefInput
+    references: tuple[FrozenReference, ...]
+    outline: OutlineView | None
+    chapters: tuple[ChapterView, ...]
+    input_hash: str
+
+
+class ModelPublic(BaseModel):
+    """Server-controlled non-secret execution conditions frozen into each job."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    provider: str = Field(min_length=1, max_length=128)
+    endpoint_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model: str = Field(min_length=1, max_length=128)
+    context_tokens: int | None = Field(ge=1, le=9223372036854775807)
+    prompt_version: str = Field(min_length=1, max_length=128)
+    outline_output_tokens: int = Field(default=4000, ge=1, le=4000)
+    chapter_output_tokens: int = Field(default=4000, ge=1, le=4000)
+
+    @field_validator("provider", "model", "prompt_version")
+    @classmethod
+    def validate_public_identifier(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,127}", value) or "://" in value or re.search(
+            r"(?:^|[./:_-])(?:sk-|CS-|LK-)", value
+        ):
+            raise ValueError("Use a non-secret execution identifier.")
+        return value

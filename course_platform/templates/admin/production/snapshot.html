@@ -1,0 +1,17 @@
+{% extends "admin/base.html" %}
+{% block title %}只读交接快照 {{ snapshot.id }}{% endblock %}
+{% block content %}
+<h1>只读 M3A 交接快照 {{ snapshot.id }}</h1>
+<p>结构检查通过；人工待审核。事实、教学价值、来源授权及销售承诺仍须独立审核。此快照不会发布课程或批准销售。</p>
+<p>项目 {{ snapshot.project_id }} · 冻结项目修订 {{ frozen.project_revision }} · {{ '快速制作：系统展开，不代表人工确认' if frozen.mode == 'quick' else '精细制作：当前方向已确认，不代表内容审核' }}</p>
+<p>快照 SHA-256：<code>{{ snapshot.hash }}</code></p>
+<p><a href="/admin/production/{{ snapshot.project_id }}">返回制作项目</a></p>
+<h2>冻结需求</h2><h3>{{ frozen.brief.title }}</h3>
+{% for name,label in [('audience','受众'),('prerequisites','先修条件'),('goal','学习目标'),('difficulty','难度')] %}<p>{{ label }}：{{ frozen.brief[name] }}</p>{% endfor %}
+<p>需求源修订 {{ frozen.brief_revision }} · 大纲源修订 {{ frozen.outline.revision }} · 章节数 {{ frozen.chapters|length }}</p>
+<h2>冻结参考资料</h2>
+{% for reference in frozen.references %}<section><h3>参考 {{ reference.id }} · 源修订 {{ reference.revision }}</h3><p>来源状态：{{ {'unprovided':'未提供来源','pending':'待核查','owner_noted':'经营者已有说明'}[reference.data.source_status] }}</p><pre class="production-raw" tabindex="0" aria-label="原始来源说明，可横向滚动">{{ reference.data.source_note }}</pre><pre class="production-raw" tabindex="0" aria-label="原始参考资料，可横向滚动">{{ reference.data.text }}</pre></section>{% else %}<p>没有参考资料。来源审核仍待人工完成。</p>{% endfor %}
+<h2>冻结章节</h2>
+{% for chapter,preview in rendered %}<section><h3>{{ frozen.outline.items[loop.index0].title }}</h3><p>{{ frozen.outline.items[loop.index0].goal }} · 正文源修订 {{ chapter.body_revision }}</p><div class="production-columns"><div><h4>原始 Markdown</h4><pre class="production-raw" tabindex="0" aria-label="原始 Markdown，可横向滚动">{{ chapter.markdown }}</pre></div><div class="production-preview"><h4>安全预览</h4>{{ preview.html|safe }}</div></div></section>{% endfor %}
+<details><summary>完整冻结交接数据（含渲染与提示词版本）</summary><pre class="production-raw" tabindex="0" aria-label="完整冻结数据，可横向滚动">{{ snapshot.payload_json }}</pre></details>
+{% endblock %}

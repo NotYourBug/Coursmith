@@ -1,0 +1,33 @@
+{% extends "admin/base.html" %}
+{% block title %}私有草稿编辑 · 智课工坊{% endblock %}
+{% block content %}
+{% if recovered is defined %}
+<h1>输入未保存</h1><p>服务器内容保持原样。请复制本次输入，然后明确重新读取页面比较；下列仍是提交时的旧修订。</p>
+<p data-error-code="{{ error.code }}">{{ error.code }}</p>
+{% if error.code in ['token_budget_exceeded','model_context_exceeded'] %}<p>章数合法不表示组合可在额度内执行。请减少章节数或参考输入，或联系维护者调整额度；系统不会截断资料或自动提高预留上限。</p>{% endif %}
+<p>本次输入仍未保存；离开提醒仅帮助保留复制机会。</p>
+<form data-editor-form data-unsaved="true" aria-label="只读未保存输入">
+{% for name,value in old_revisions.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}"><p>旧 {{ name }}：{{ value if value else '空白正文' }}</p>{% endfor %}
+{% for name,value in recovered.items() %}<label>{{ name }}{% if field_errors.get(name) %}<span data-field-error="{{ name }}">{{ field_errors[name] }}</span>{% endif %}<textarea name="{{ name }}" rows="12" readonly>{{ value }}</textarea></label>{% endfor %}
+</form>
+<p><a href="{{ reload_url }}">明确重新读取页面</a></p>
+{% else %}
+<h1>章节正文编辑</h1><p><a href="/admin/production/{{ project.id }}">返回项目</a> · 私有草稿，人工待审核。</p>
+<p>明确保存后刷新右侧预览。内容不会自动保存；预览显示已保存修订。</p>
+<p class="nojs-note">无 JavaScript 时没有离开提醒，请在离开前明确保存；保存、预览与任务刷新仍可使用。</p>
+{% include "admin/production/_findings.html" %}
+<div class="editor-columns">
+<section><h2>Markdown 源文</h2>
+<form method="post" action="/admin/production/{{ project.id }}/chapters/{{ chapter.id }}/save" data-editor-form>
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="body_revision" value="{{ chapter.body_revision if chapter.body_revision is not none else '' }}">
+<div class="markdown-toolbar" aria-label="Markdown 工具栏" hidden>
+<button type="button" data-markdown="bold">粗体</button><button type="button" data-markdown="italic">斜体</button><button type="button" data-markdown="heading">二级标题</button><button type="button" data-markdown="list">列表</button><button type="button" data-markdown="code">代码块</button><button type="button" data-markdown="link">链接</button><button type="button" data-markdown="sections">课程章节模板</button>
+</div>
+<label>Markdown 正文（UTF-8 最多 200 KiB）<textarea name="markdown" rows="24">{{ chapter.markdown }}</textarea></label>
+<button type="submit">保存正文</button></form>
+<form method="post" action="/admin/production/{{ project.id }}/chapters/{{ chapter.id }}/regenerate"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ project.revision }}"><input type="hidden" name="idempotency_key" value="{{ idempotency_key }}"><button type="submit">重新生成本章候选</button></form>
+</section>
+<section><h2>已保存正文预览</h2><div class="production-preview">{{ preview.html|safe }}</div>{% for finding in preview.findings %}<p>{{ finding.code }}</p>{% endfor %}<p><a href="/admin/production/{{ project.id }}/preview">整门课程安全预览</a></p></section>
+</div>
+{% endif %}
+{% endblock %}

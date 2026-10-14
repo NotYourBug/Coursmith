@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from course_platform import cli
-from course_platform.database import backup_database, connect, migrate_database, transaction
+from course_platform.database import LATEST_SCHEMA_VERSION, backup_database, connect, migrate_database, transaction
 from course_platform.domain import BusinessError
 from course_platform.migrations import v002_operations
 
@@ -58,7 +58,7 @@ def test_failed_migration_rolls_back(legacy_db, tmp_path, monkeypatch):
     with closing(sqlite3.connect(legacy_db)) as connection:
         assert connection.execute("SELECT name FROM sqlite_master WHERE name IN ('schema_migrations', 'products')").fetchall() == []
     monkeypatch.setattr(v002_operations, "apply", original)
-    assert migrate_database(legacy_db, backup_path=tmp_path / "retry.db").to_version == 5
+    assert migrate_database(legacy_db, backup_path=tmp_path / "retry.db").to_version == LATEST_SCHEMA_VERSION
 
 
 def test_existing_upgrade_requires_non_overwriting_backup(legacy_db, tmp_path):
@@ -102,7 +102,7 @@ def test_v1_can_be_upgraded_separately(tmp_path):
     with pytest.raises(BusinessError):
         migrate_database(path)
     report = migrate_database(path, backup_path=tmp_path / "v1.db")
-    assert (report.from_version, report.to_version) == (1, 5)
+    assert (report.from_version, report.to_version) == (1, LATEST_SCHEMA_VERSION)
 
 
 @pytest.mark.parametrize("versions", [[3], [1, 3], [2]])
@@ -118,7 +118,7 @@ def test_unknown_or_noncontiguous_versions_are_rejected(tmp_path, versions):
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [0, 6, -1, True, 1.5])
+@pytest.mark.parametrize("version", [0, LATEST_SCHEMA_VERSION + 1, -1, True, 1.5])
 def test_invalid_target_is_rejected_before_creating_database(tmp_path, version):
     path = tmp_path / "new.db"
     with pytest.raises(BusinessError):
@@ -166,7 +166,7 @@ def test_cli_check_only_does_not_modify_source(legacy_db, tmp_path, monkeypatch,
     assert '"version": 0' in output and '"integrity": "ok"' in output
     assert legacy_db.read_bytes() == before
     assert cli.main(["migrate", "--backup", str(tmp_path / "before.db")]) == 0
-    assert '"to_version": 5' in capsys.readouterr().out
+    assert f'"to_version": {LATEST_SCHEMA_VERSION}' in capsys.readouterr().out
 
 
 def test_cli_check_missing_database_does_not_create_it(tmp_path, monkeypatch, capsys):

@@ -1,0 +1,29 @@
+.production-page main { max-width: 80rem; }
+.production-page h1, .production-page p, .production-page li { overflow-wrap: anywhere; }
+.production-page form { display: grid; gap: .75rem; margin: 1rem 0; min-width: 0; }
+.production-page header form { display: block; margin: 0 0 0 auto; }
+.production-page label { display: grid; gap: .25rem; min-width: 0; }
+.production-page textarea { resize: vertical; max-width: 100%; }
+.production-page input[type="checkbox"] { width: auto; }
+.production-page details { margin: 1rem 0; border: 1px solid #cbd6d3; padding: .75rem; }
+.production-page summary { cursor: pointer; font-weight: 600; }
+.editor-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+.editor-columns > section { min-width: 0; }
+.production-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+.production-columns > div { min-width: 0; }
+.production-raw { min-width: 0; max-width: 100%; overflow-x: auto; white-space: pre; padding: .75rem; background: #f3f6f5; }
+.markdown-toolbar { display: flex; flex-wrap: wrap; gap: .4rem; }
+.markdown-toolbar[hidden] { display: none; }
+.markdown-toolbar button { padding: .4rem .65rem; background: #e5efec; color: #155e56; }
+.production-preview { min-width: 0; overflow-wrap: anywhere; border: 1px solid #cbd6d3; padding: 1rem; }
+.production-preview pre { max-width: 100%; overflow-x: auto; white-space: pre; padding: .75rem; background: #f3f6f5; }
+.production-preview .table-scroll, .production-page .table-wrap { max-width: 100%; overflow-x: auto; }
+.production-preview table { width: max-content; min-width: 100%; }
+.production-preview th, .production-preview td { white-space: nowrap; }
+.nojs-note { color: #465f56; font-size: .9rem; }
+@media (max-width: 700px) {
+  .editor-columns { grid-template-columns: minmax(0, 1fr); }
+  .production-columns { grid-template-columns: minmax(0, 1fr); }
+  .production-page main { margin: .75rem; padding: 1rem; }
+  .production-page header form { margin-left: 0; }
+}

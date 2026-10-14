@@ -1,0 +1,15 @@
+<section data-findings="current" aria-label="当前草稿检查">
+<h2>当前草稿检查</h2>
+<p>当前项目修订 {{ project.revision }} · 输入 SHA-256：<code>{{ draft_check.input_hash }}</code>。</p>
+<ul>{% for finding in current_findings %}<li><strong>{{ '阻断项' if finding.blocking else '人工检查提醒' }}</strong>：{{ finding.message }} <code>{{ finding.code }}</code>{% if finding.chapter_id %} · {{ finding.title if finding.title else '章节' }} · ID <code>{{ finding.chapter_id }}</code>{% endif %}{% if finding.editor_url %} · <a href="{{ finding.editor_url }}">编辑此章</a>{% endif %}</li>{% else %}<li>当前没有结构发现。</li>{% endfor %}</ul>
+<p>人工待审核：结构检查不能替代事实、来源授权和教学价值的人工检查。</p>
+</section>
+{% if recorded_check %}
+<section data-findings="recorded" aria-label="原始记录的检查发现">
+<h2>原始记录的检查发现</h2>
+<p>原始记录 {{ recorded_check.id }} · 冻结项目修订 {{ recorded_check.project_revision }} · 原始输入 SHA-256：<code>{{ recorded_check.input_hash }}</code>。</p>
+<p>{{ '原始记录仍有阻断项' if recorded_check.blocking else '原始记录结构合格' }}。{% if recorded_check.input_hash != frozen.input_hash or recorded_check.project_revision != project.revision %}已过时：当前源输入或项目修订已变化；以下仅是原始历史发现，请重新记录检查。{% else %}记录对应当前输入。{% endif %}</p>
+<ul>{% for finding in recorded_findings %}<li><strong>{{ '阻断项' if finding.blocking else '人工检查提醒' }}</strong>：{{ finding.message }} <code>{{ finding.code }}</code>{% if finding.chapter_id %} · 原始章节 ID <code>{{ finding.chapter_id }}</code>{% endif %}{% if finding.editor_url %} · <a href="{{ finding.editor_url }}">编辑当前同 ID 章节</a>（当前标题和正文可能已变化）{% endif %}</li>{% else %}<li>原始记录没有结构发现。</li>{% endfor %}</ul>
+<p>人工待审核：原始检查不构成内容、来源授权或销售批准。</p>
+</section>
+{% endif %}

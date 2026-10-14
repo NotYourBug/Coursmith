@@ -1,0 +1,23 @@
+{% extends "admin/base.html" %}
+{% block title %}候选比较 · 智课工坊{% endblock %}
+{% block content %}
+<h1>生成候选</h1><p><a href="/admin/production/{{ project.id }}">返回项目</a> · 私有草稿，人工待审核。</p>
+<p>候选 {{ candidate.id }} · {{ candidate.state }}。候选源文保留为历史；只有明确采用才改变当前正文，采用不会自动发布。</p>
+{% if candidate.kind == 'chapter' and not chapter_active %}<p role="status">章节已移出当前大纲，此候选仅供历史查看，不能采用到当前正文。</p>{% endif %}
+<div class="editor-columns">
+<section><h2>候选内容</h2><label>候选源文 <textarea name="candidate_text" readonly rows="18">{{ candidate_text }}</textarea></label>
+{% if candidate_preview %}<h3>候选安全预览</h3><div class="production-preview candidate-preview">{{ candidate_preview.html|safe }}</div>{% for finding in candidate_preview.findings %}<p>{{ finding.code }}</p>{% endfor %}{% endif %}</section>
+<section><h2>{{ '当前正文' if chapter_active else '保留的章节正文' }}</h2>
+{% if chapter %}<label>当前正文 <textarea name="current_markdown" readonly rows="18">{{ chapter.markdown }}</textarea></label><div class="production-preview">{{ current_preview.html|safe }}</div>
+{% else %}<label>当前大纲源文 <textarea readonly rows="18">{{ outline_json }}</textarea></label>{% endif %}</section>
+</div>
+{% if candidate.state == 'pending' %}
+{% if candidate.kind == 'outline' %}
+<p>每个候选位置（从 1 开始）必须明确映射到当前章节 ID 或 null（新章）。不按题目猜测对应关系。</p>
+<form method="post" action="/admin/production/{{ project.id }}/outline/adopt" data-editor-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ project.revision }}"><input type="hidden" name="candidate_id" value="{{ candidate.id }}"><label>章节对应 JSON <textarea name="matches_json" rows="8">{{ matches_json }}</textarea></label><button type="submit">采用大纲候选</button></form>
+{% elif chapter_active %}
+<form method="post" action="/admin/production/{{ project.id }}/candidates/{{ candidate.id }}/adopt"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ project.revision }}"><input type="hidden" name="body_revision" value="{{ chapter.body_revision if chapter.body_revision is not none else '' }}"><button type="submit">采用章节候选</button></form>
+{% else %}<button type="button" disabled>采用章节候选（历史章节不可采用）</button>{% endif %}
+<form method="post" action="/admin/production/{{ project.id }}/candidates/{{ candidate.id }}/reject"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ project.revision }}"><button type="submit">拒绝候选</button></form>
+{% endif %}
+{% endblock %}

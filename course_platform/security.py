@@ -26,17 +26,18 @@ def _single_header(request: Request, name: str) -> str | None:
     return values[0] if values else None
 
 
-async def read_limited_body(request: Request, limit: int) -> bytes:
+async def read_limited_body(request: Request, limit: int, *, form_limit: int = 65536) -> bytes:
     """Bound the ASGI stream before any parsing, regardless of Content-Length.
 
-    Only UTF-8 URL-encoded forms (64 KiB) and JSON (16 KiB) are supported.
+    Only UTF-8 URL-encoded forms and JSON (16 KiB) are supported.
+    Forms default to 64 KiB; production callers explicitly select their bound.
     A smaller caller limit is respected. This returns bytes, not parsed JSON.
     """
-    if type(limit) is not int or limit < 1:
+    if type(limit) is not int or limit < 1 or type(form_limit) is not int or form_limit < 1:
         raise ValueError("Body limit must be a positive integer")
     content_type = _single_header(request, "content-type")
     parts = [part.strip().lower() for part in (content_type or "").split(";")]
-    bounds = {"application/x-www-form-urlencoded": 65536, "application/json": 16384}
+    bounds = {"application/x-www-form-urlencoded": form_limit, "application/json": 16384}
     if parts[0] not in bounds or len(parts) > 2 or (
         len(parts) == 2 and parts[1] not in ('charset=utf-8', 'charset="utf-8"')
     ):

@@ -8,7 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-The project has three entry points, all sharing a single core library:
+The installed `course_platform` package now also provides the M1 delivery/admin site and M2A private production workbench. Read `docs/operations/m2a-runbook.md` for current installed commands, schema6 migration/recovery and the independent worker. `docs/operations/admin-v1-runbook.md` retains historical M1 acceptance evidence; its old latest5/M2-not-delivered statements do not describe the current branch. M2A ends at private drafts and immutable handoff snapshots; structural checks still require human content/source review and do not publish or approve a sale.
+
+From an independent installed runtime directory, use `.venv/Scripts/python.exe -X utf8 -m course_platform.cli serve --host 127.0.0.1 --port 8000` for Web and a separate `.venv/Scripts/python.exe -X utf8 -m course_platform.cli worker` process. Web never starts a hidden worker. Configure only the supported `deepseek-flash` model with thinking disabled and explicit context/token limits on the server; paid requests and production changes require separate authorization. Existing schema5 databases need an offline backup and explicit migration before either process starts.
+
+The legacy generation entry points below share their original core library and remain separate from the workbench:
 
 - **`course_gen_core.py`** — Shared library (~1160 lines): configuration, prompt templates, HTML templates, DeepSeek API calls, HTML→PNG conversion (Selenium/Chrome), ZIP packaging, and batch pipeline orchestration.
 - **`batch_course_gen.py`** — CLI batch processor. Scans `课程标题/` for `.txt` files where each line is a course title, then runs the full pipeline.

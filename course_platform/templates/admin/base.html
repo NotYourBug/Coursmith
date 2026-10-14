@@ -5,11 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}管理后台 · 智课工坊{% endblock %}</title>
   <link rel="stylesheet" href="/static/admin/admin.css">
+  {% block production_resources %}{% if request.url.path.startswith('/admin/production') or request.url.path.startswith('/admin/jobs') %}
+  <link rel="stylesheet" href="/static/admin/production.css">
+  <script type="module" src="/static/admin/production.js"></script>
+  {% endif %}{% endblock %}
 </head>
-<body>
+<body{% if request.url.path.startswith('/admin/production') or request.url.path.startswith('/admin/jobs') %} class="production-page"{% endif %}>
   <header><a class="brand" href="/admin">智课工坊 · 管理后台</a>
     {% if authenticated %}
-    <nav aria-label="后台导航"><a href="/admin">后台首页</a>{% if request.app.state.product_service is defined %}<a href="{{ request.url_for('product_list') }}">商品管理</a><a href="{{ request.url_for('category_list') }}">分类管理</a>{% endif %}{% if request.app.state.code_service is defined %}<a href="{{ request.url_for('code_batch_list') }}">发码批次</a>{% endif %}{% if request.app.state.order_service is defined %}<a href="{{ request.url_for('order_list') }}">店铺订单</a>{% endif %}<a href="/admin/account/password">修改密码</a></nav>
+    <nav aria-label="后台导航"><a href="/admin">后台首页</a>{% if request.app.state.product_service is defined %}<a href="{{ request.url_for('product_list') }}">商品管理</a><a href="{{ request.url_for('category_list') }}">分类管理</a>{% endif %}{% if request.app.state.code_service is defined %}<a href="{{ request.url_for('code_batch_list') }}">发码批次</a>{% endif %}{% if request.app.state.order_service is defined %}<a href="{{ request.url_for('order_list') }}">店铺订单</a>{% endif %}{% if request.app.state.production_service is defined %}<a href="/admin/production">制作项目</a><a href="/admin/jobs">任务中心</a>{% endif %}<a href="/admin/account/password">修改密码</a></nav>
     {% if request.app.state.legacy_service is defined %}<a href="{{ request.url_for('legacy_codes') }}">历史核验</a>{% endif %}
     <form action="/admin/logout" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
