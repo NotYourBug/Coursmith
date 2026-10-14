@@ -47,6 +47,8 @@ Web 窗口：`.venv/Scripts/python.exe -X utf8 -m course_platform.cli serve --ho
 
 关闭 SDK 隐式重试，单次总截止120秒。一个主机、一个 Web、一个 worker，单任务/单请求执行；每10秒独立心跳、租约60秒，120秒无心跳由 worker 维护或明确 POST 检查中断。GET 只读：60–119秒显示租约过期，>=120秒显示疑似失联，但数据库仍可能记录 running；历史空闲心跳不能证明当前在线。没有活动轮次时如实显示无法确认。页面存在不能证明 worker 正在执行。
 
+首次调用采用懒惰准备，SDK/HTTP 初始化期间独立心跳继续运行；120秒总截止包含准备及完整响应。准备结束后重新核验执行权、取消、停止与当前输入，再登记并发送请求。准备超时或失去执行权时停止新请求；尚未登记调用的准备阶段不产生调用记录或调用预留。短调用登记已提交但回执尚未返回时，嵌套截止或重复取消仍先收回同一登记的回执，再传播原始取消并按原规则隔离 Unknown；不会因此继续发送 HTTP、追加调用或释放未知预留。已经登记调用的中断按原规则核对和明确恢复。
+
 Ctrl+C/SIGTERM 请求协作停止，不再启动下一请求；合法在途响应仍可保存/计费。硬终止可能留下 sent/unknown；不要把终止进程理解为立即停费。Windows 验收的隐藏子进程使用测试内 CRT 信号桥，证明 handler 协作，未认证外部服务管理器的信号交付；hard kill 单独实测。
 
 生产 HTTPS、Secure Cookie、同站 Origin/CSRF、可信代理与 `--no-proxy-headers` 沿用 M1 要求。上述 localhost/test 是演练配置，不是上线配置。后台所有私有源/候选/快照和任务页面保持 owner/no-store；买家不能访问。内容 root 只放原发行包，不能作为私有草稿/备份目录。
@@ -78,6 +80,8 @@ print(check_database(Path('C:/test/unused-restored.db')))
 
 有 queued/running 修改任务先取消并等停止/明确中断，再切换模式或归档；切换不丢历史、不自行调用。排队取消无模型请求；运行取消是请求停止，已经发出的请求仍可能计费。任务完成/结构通过/人工待审核分别显示。快照需解决结构阻断、候选/输入变更，并满足精细当前确认；事实/深度/案例/练习/授权/销售承诺继续由人检查。
 
+项目、章节编辑及预览显示当前草稿的阻断项和人工检查提醒，给出中文修复说明、当前章节标题/稳定 ID 和编辑链接。缺少总结或只有总结标题时，按链接补充内容并明确保存，当前检查随已保存源重新计算。原始检查记录单独保留原输入哈希、项目修订和章节 ID；源或修订变化后标记已过时，历史链接明确指向当前同 ID 章节。人工内容审核始终独立存在。只读快照的完整参考资料、来源说明、Markdown 与规范 JSON 可局部横向滚动、聚焦复制；窄屏源文与预览按列堆叠。
+
 合法60章、20,000字符参考资料可能超上下文/默认200,000额度；页面提示减少输入或由维护者重新评估配置，不截断、不秘密提高额度。初始预留按逻辑请求计算，不三倍预乘互斥尝试。每实际尝试独立调用/预留；仅适配器证明未接受的短暂失败可 known0/rejected 释放，再独立预留重试，间隔2/8秒，最多两次。普通5xx、超时/断流和不明接受均 unknown，不自动重发、不释放原预留。
 
 失联/失败后先查看成功章、冻结输入、未知调用、现有预留；明确检查中断是 POST，GET 不修复。核对未知调用可记录实际 usage 或明确接受再次调用风险；风险同意不把原 unknown 改零，不释放原预留。沿最新恢复子任务继续，不能绕回祖先跳过后代未知账目。确认恢复创建关联的新任务/新token/独立预留，只补未成功目标；输入已变则新制作并重新确认。快速首次大纲仅候选而未采用时，先人工处理再新提交，空待生成列表不等于完整成功。
@@ -86,10 +90,10 @@ print(check_database(Path('C:/test/unused-restored.db')))
 
 当前源码 Python3.11.9，SDK openai2.54.0/httpx0.28.1，pytest8.4.2/Playwright1.63.0；实际 Chrome155.0.8059.40。新渲染依赖 markdown-it-py4.2.0/nh30.3.7/mdurl0.1.2。完整源/独立安装差异见依赖记录，不声称在线最新版。
 
-2026-10-13 当前分支实测：非浏览器/非打包全量1920通过、1跳过、22未选中，1715.38秒；包含真实 Chrome 与离线 fresh wheel 的完整全量1942通过、1跳过，2516.03秒；独立打包复验6通过，323.04秒，无跳过。Ruff 全仓检查与独立 wheel 构建均 exit0；后者实际隔离构建后端为 setuptools84.0.0。唯一跳过是既有 `tests/test_content_inspection.py:260` 在 Windows 上创建文件软链接遭 WinError1314，目录 reparse-point 用例仍实际执行；浏览器和打包均未跳过。最终再次启动真实 Chrome 核实版本155.0.8059.40，源码依赖未升级。
+2026-10-14 最终回执修正及既有两阶段维护观察对齐后的当前分支实测：非浏览器/非打包全量1939通过、1跳过、25未选中，2282.83秒；包含真实 Chrome 与离线 fresh wheel 的完整全量1964通过、1跳过，2358.62秒；独立打包复验6通过，363.48秒，无跳过。Ruff 全仓检查与独立 wheel 构建均 exit0；后者实际隔离构建后端为 setuptools84.0.0。唯一跳过是既有 `tests/test_content_inspection.py:260` 在 Windows 上创建文件软链接遭 WinError1314，目录 reparse-point 用例仍实际执行；浏览器和打包均未跳过。实际 Chrome155.0.8059.40，既有72个第三方 wheel 与源码依赖保持原指纹。Task13 的1920/1942项、10月13日整批修正的1936/1961项及10月14日观察对齐前的失败全量保留为历史；当前结果还覆盖嵌套截止/重复取消登记回执、原始取消传播、Unknown 预留和零 HTTP 发送回归。
 
-实际命令、exit、durations、安装/恢复证明、源文件指纹与暂存前/后空白检查保留在 `.superpowers/sdd/2026-10-08-production-workbench-m2a-plan/task-13-report.md` 及原始日志。初始真实 RED 是完整安装依赖记录与恢复手册缺失；已有恢复/隐私能力没有被虚构成新运行缺陷。先前在96%被人为中断的全量缺少 traceback/exit，仍保留为未完成证据；新鲜完整验收使用独立日志，不将该中断记录算通过。最终整批独立复审与条件推送仍由控制器完成。
+当前实际命令、exit、durations、真实 RED/GREEN、完整安装/浏览器证明、源文件指纹与暂存前/后空白检查保留在 `.superpowers/sdd/2026-10-08-production-workbench-m2a-plan/final-receipt-report.md`、`final-receipt-r24-*` 当前原始日志及 `final-receipt-*` 回执回归证据。执行源/测试/依赖树在最终全部命令间保持同一183项冻结哈希；这些命令完成后仅更新本手册的已验证行为和结果说明。原 Task13 报告、96%中断记录、整批 v1 审查及观察阶段失败/真实 SQLite 诊断全部保留，历史不作为当前通过结果。控制器负责最终独立限定确认、条件提交与非强制推送；结果以其最终交接记录为准。
 
-验收命令使用工作树 `.venv/Scripts/python.exe -X utf8`，明确 `COURSMITH_BROWSER_CHANNEL=chrome`、完整 `COURSMITH_WHEELHOUSE`、`PIP_FIND_LINKS`/`PIP_NO_INDEX`：先 `-m pytest -m "not browser and not packaging" -q --tb=short --durations=15 -ra`，再完整 `-m pytest -q --tb=short --durations=15 -ra`、`-m ruff check .`、`-m build --wheel`、`-m pytest tests/test_wheel_install.py tests/production/test_installed_workbench.py -m packaging -q` 及 `git diff --check`。缺 wheel/依赖/真实浏览器为环境失败，不能跳过、源码回退或使用生产 fake flag。
+验收命令使用工作树 `.venv/Scripts/python.exe -X utf8`，明确 `COURSMITH_BROWSER_CHANNEL=chrome`、完整 `COURSMITH_WHEELHOUSE`、`PIP_FIND_LINKS`/`PIP_NO_INDEX`：先 `-m pytest -m "not browser and not packaging" -q --tb=short --durations=15 -ra`，再完整 `-m pytest -q --tb=short --durations=15 -ra`、`-m ruff check .`、`-m build --wheel`、`-m pytest tests/test_wheel_install.py tests/production/test_installed_workbench.py -m packaging -q`、`git diff --check` 及 `git diff --cached --check`。缺 wheel/依赖/真实浏览器为环境失败，不能跳过、源码回退或使用生产 fake flag。
 
-390×844是桌面窄屏模拟，非实体手机认证；仍需真实手机及真实课程人工反馈。没有付费供应商费用/商业内容质量/生产切换试验。已知 Windows symlink WinError1314 只能按实际最终输出披露。旧 M1 的1063结果不能当本分支结果。独立全分支复审、必要修正后最终验收和有条件非强制推送由控制器完成。
+390×844是桌面窄屏模拟，非实体手机认证；仍需真实手机及真实课程人工反馈。没有付费供应商费用/商业内容质量/生产切换试验。已知 Windows symlink WinError1314 只能按实际最终输出披露。旧 M1 的1063结果不能当本分支结果。独立全分支复审、必要修正后的最终验收和有条件非强制推送由控制器负责，结果以其最终交接记录为准。

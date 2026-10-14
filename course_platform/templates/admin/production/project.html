@@ -41,7 +41,7 @@
 <h2>不可变检查与交接</h2>
 <p>本地检查无需模型配置或调用额度。交接前须停止修改任务、补齐结构，并明确处理输入变化和候选；精细模式还须确认当前大纲。检查及交接始终是人工待审核，不构成事实、来源授权或销售批准。</p>
 <form method="post" action="/admin/production/{{ project.id }}/check">{{ hidden() }}<button type="submit">记录草稿检查</button></form>
-{% if recorded_check %}<p>最近记录：项目修订 {{ recorded_check.project_revision }} · {{ '仍有阻断项' if recorded_check.blocking else '结构检查通过' }} · 人工待审核{% if recorded_check.input_hash != frozen.input_hash %}；源输入已变化，请重新检查{% endif %}。</p>{% endif %}
+{% include "admin/production/_findings.html" %}
 <form method="post" action="/admin/production/{{ project.id }}/snapshots">{{ hidden() }}<button type="submit">生成交接快照</button></form>
 <ul>{% for snapshot in snapshots %}<li><a href="/admin/production/{{ project.id }}/snapshots/{{ snapshot.id }}">只读交接快照 {{ snapshot.id }} · 项目修订 {{ snapshot.project_revision }}</a></li>{% else %}<li>暂无交接快照。</li>{% endfor %}</ul>
 <h2>项目任务</h2><ul>{% for job in project_jobs %}<li><a href="/admin/jobs/{{ job.id }}">任务 {{ job.id }} · {{ job.kind }} · {{ job.state }}</a></li>{% else %}<li>暂无任务。</li>{% endfor %}</ul>

@@ -22,6 +22,67 @@ def textarea(response, name):
     return html.unescape(re.search(r'<textarea[^>]*name="' + name + r'"[^>]*>(.*?)</textarea>', response.text, re.S).group(1))
 
 
+@pytest.mark.parametrize("body", [
+    "## 学习目标\n理解\n## 讲解\n说明\n## 案例\n演示\n## 练习\n思考\n",
+    "## 学习目标\n理解\n## 讲解\n说明\n## 案例\n演示\n## 练习\n思考\n## 总结\n",
+], ids=["missing-summary", "empty-summary"])
+def test_current_and_recorded_findings_support_stable_chapter_repair(production_data, body):
+    d, c = production_data, production_data.client
+    base = f"/admin/production/{d.project_id}"
+    frozen = d.drafts.freeze_input(d.project_id)
+    hostile_title = '<img src=x onerror=alert(1)>旧章节'
+    first = frozen.outline.items[0].model_copy(update={"title": hostile_title})
+    d.drafts.save_outline(d.actor, d.project_id, frozen.project_revision,
+                         OutlineInput(items=[first, frozen.outline.items[1]]))
+    complete = "## 学习目标\n理解\n## 讲解\n说明\n## 案例\n演示\n## 练习\n思考\n## 总结\n回顾"
+    for chapter in d.drafts.freeze_input(d.project_id).chapters:
+        d.drafts.save_chapter(d.actor, d.project_id, chapter.id, None,
+                             body if chapter.id == d.chapter_id else complete)
+    assert post(c, base + "/check", revision=str(d.projects.get(d.project_id).revision)).status_code == 303
+    with transaction(d.db_path) as conn:
+        recorded = tuple(conn.execute("SELECT * FROM draft_checks ORDER BY id DESC LIMIT 1").fetchone())
+        hash_value = conn.execute("SELECT input_hash FROM draft_checks ORDER BY id DESC LIMIT 1").fetchone()[0]
+
+    def history():
+        with transaction(d.db_path) as conn:
+            return {table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+                    for table in ("draft_checks", "production_projects", "chapter_revisions", "admin_events", "model_calls")}
+
+    before = history()
+    for path in (base, base + "/preview", base + "/chapters/" + d.chapter_id):
+        response = c.get(path)
+        assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+        current = re.search(r'<section[^>]*data-findings="current"[^>]*>(.*?)</section>', response.text, re.S)
+        assert current, "Current structural diagnostics are missing"
+        assert "缺少总结" in current.group(1) and "阻断项" in current.group(1)
+        assert "missing_summary" in current.group(1) and d.chapter_id in current.group(1)
+        assert 'href="' + base + '/chapters/' + d.chapter_id + '"' in current.group(1)
+        assert html.escape(hostile_title) in current.group(1)
+        assert hostile_title not in response.text
+        assert hash_value in response.text and "原始记录" in response.text
+        assert "人工待审核" in response.text
+    assert history() == before
+
+    chapter = d.drafts.freeze_input(d.project_id).chapters[0]
+    assert post(c, base + "/chapters/" + chapter.id + "/save",
+                body_revision=str(chapter.body_revision), markdown=complete).status_code == 303
+    current = d.drafts.freeze_input(d.project_id)
+    d.drafts.save_outline(d.actor, d.project_id, current.project_revision,
+                         OutlineInput(items=[current.outline.items[0].model_copy(update={"title": "当前新标题"}), current.outline.items[1]]))
+    before = history()
+    for path in (base, base + "/preview", base + "/chapters/" + d.chapter_id):
+        response = c.get(path)
+        current_section = re.search(r'<section[^>]*data-findings="current"[^>]*>(.*?)</section>', response.text, re.S).group(1)
+        assert "missing_summary" not in current_section
+        recorded_section = re.search(r'<section[^>]*data-findings="recorded"[^>]*>(.*?)</section>', response.text, re.S).group(1)
+        assert "missing_summary" in recorded_section and "已过时" in recorded_section
+        assert hash_value in recorded_section and "原始记录" in recorded_section
+        assert "当前新标题" not in recorded_section and hostile_title not in recorded_section
+    assert history() == before
+    with transaction(d.db_path) as conn:
+        assert tuple(conn.execute("SELECT * FROM draft_checks ORDER BY id DESC LIMIT 1").fetchone()) == recorded
+
+
 def test_large_chinese_markdown_survives_save_and_stale_conflict(production_data):
     d, client = production_data, production_data.client
     body = "中文😀百分号% <script>源码</script>\n" * 4000

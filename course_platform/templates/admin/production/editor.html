@@ -15,6 +15,7 @@
 <h1>章节正文编辑</h1><p><a href="/admin/production/{{ project.id }}">返回项目</a> · 私有草稿，人工待审核。</p>
 <p>明确保存后刷新右侧预览。内容不会自动保存；预览显示已保存修订。</p>
 <p class="nojs-note">无 JavaScript 时没有离开提醒，请在离开前明确保存；保存、预览与任务刷新仍可使用。</p>
+{% include "admin/production/_findings.html" %}
 <div class="editor-columns">
 <section><h2>Markdown 源文</h2>
 <form method="post" action="/admin/production/{{ project.id }}/chapters/{{ chapter.id }}/save" data-editor-form>

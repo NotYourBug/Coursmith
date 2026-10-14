@@ -287,3 +287,117 @@ def test_worker_idle_and_stopped_loop_do_not_call_model(jobs_context):
         await w.run_forever(stop)
     asyncio.run(stopped())
     assert not model.calls
+
+
+@pytest.mark.parametrize("interruption", ["timeout", "cancel", "stop", "lease", "owner", "source", "config"])
+def test_cold_adapter_preparation_keeps_heartbeat_and_prevents_late_send(
+        jobs_context, read_rows, monkeypatch, interruption):
+    import builtins
+    import threading
+    import time
+    import httpx
+    from course_platform.jobs import handlers, worker as worker_module
+    from course_platform.production.llm import OpenAIModel
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    sent, closed, heartbeat_times = [], [], []
+    r = setup_run(jobs_context, existing=True, count=1, kind="chapters_generate")
+    stop = None
+    original_import = builtins.__import__
+
+    class Response:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def iter_bytes(self):
+            from tests.jobs.fakes import response_body
+            yield response_body(BODY)
+
+    class SDK:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(with_streaming_response=self))
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            await self.close()
+        async def close(self):
+            closed.append(True)
+        def create(self, **kwargs):
+            sent.append(time.monotonic())
+            return Response()
+
+    def cold_import(name, *args, **kwargs):
+        if name == "openai":
+            entered.set()
+            release.wait(3)  # bounded even when the old loop blocks the releaser
+            finished.set()
+            return SimpleNamespace(AsyncOpenAI=SDK, APIStatusError=type("Status", (Exception,), {}))
+        return original_import(name, *args, **kwargs)
+
+    real_heartbeat = r.c.repository.heartbeat
+    def heartbeat(claim):
+        if entered.is_set() and not finished.is_set():
+            heartbeat_times.append(time.monotonic())
+        return real_heartbeat(claim)
+
+    monkeypatch.setattr(builtins, "__import__", cold_import)
+    monkeypatch.setattr(r.c.repository, "heartbeat", heartbeat)
+    monkeypatch.setattr(worker_module, "sleep", lambda _: asyncio.sleep(.01))
+    if interruption == "timeout":
+        monkeypatch.setattr(handlers, "timeout", lambda _: asyncio.timeout(.08))
+
+    async def exercise():
+        nonlocal stop
+        stop = asyncio.Event()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda _: (_ for _ in ()).throw(AssertionError("No external HTTP")))) as client:
+            r.model = OpenAIModel(r.c.execution_config, http_client=client)
+            active = worker(r)
+            task = asyncio.create_task(active._run_once(stop))
+            try:
+                assert await asyncio.to_thread(entered.wait, 2)
+                # Actual heartbeat must progress while bootstrap is still blocked.
+                for _ in range(1000):
+                    if heartbeat_times or finished.is_set():
+                        break
+                    await asyncio.sleep(.001)
+                if interruption == "cancel":
+                    with transaction(r.c.db_path, immediate=True) as conn:
+                        conn.execute("UPDATE production_jobs SET cancel_requested=1 WHERE id=?", (r.job.id,))
+                elif interruption == "stop":
+                    stop.set()
+                elif interruption == "lease":
+                    r.c.clock.advance(seconds=60)
+                elif interruption == "owner":
+                    with transaction(r.c.db_path, immediate=True) as conn:
+                        conn.execute("UPDATE admins SET enabled=0 WHERE id=?", (r.c.actor.admin_id,))
+                elif interruption == "source":
+                    with transaction(r.c.db_path, immediate=True) as conn:
+                        conn.execute("UPDATE production_projects SET current_outline_revision_id=NULL WHERE id=?", (r.p.id,))
+                elif interruption == "config":
+                    object.__setattr__(r.c.execution_config, "public", r.c.config.model_copy(update={"prompt_version": "drift"}))
+                if interruption == "timeout":
+                    await task  # deadline must end the job before preparation finishes
+                release.set()
+                await task
+                assert await asyncio.to_thread(finished.wait, 2)
+                await asyncio.sleep(.04)  # let late preparation cleanup finish
+                assert heartbeat_times, "Cold SDK bootstrap starved the independent heartbeat"
+                assert not sent, "Adapter sent after deadline or authority was lost"
+                assert not read_rows("SELECT * FROM model_calls")
+                assert not read_rows("SELECT * FROM token_reservations WHERE call_id IS NOT NULL")
+                assert not client.is_closed, "Injected client lifecycle belongs to its caller"
+                assert client.event_hooks["response"] == []
+                # Installed SDK.close only closes its HTTP client; neither is
+                # owned here. Cleanup must remove our hook and retain the client.
+                assert closed == []
+                assert not read_rows("SELECT * FROM chapter_revisions")
+                expected = "cancelled" if interruption == "cancel" else ("running" if interruption in ("lease", "owner") else "failed")
+                assert r.c.service.get(r.job.id).state == expected
+                assert not [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+            finally:
+                release.set()
+                if not task.done():
+                    await task
+    asyncio.run(exercise())

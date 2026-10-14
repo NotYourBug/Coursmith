@@ -52,6 +52,45 @@ def _local_time(value):
     return from_db_time(value).astimezone(timezone(timedelta(hours=8), "Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S Asia/Shanghai")
 
 
+_FINDING_MESSAGES = {
+    "missing_objectives": "缺少学习目标，或目标下没有正文；请补充学习目标及内容。",
+    "missing_explanation": "缺少讲解，或讲解下没有正文；请补充讲解及内容。",
+    "missing_example": "缺少案例，或案例下没有正文；请补充案例或示例及内容。",
+    "missing_exercise": "缺少练习，或练习下没有正文；请补充练习及内容。",
+    "missing_summary": "缺少总结，或总结下没有正文；请补充总结或小结及内容。",
+    "missing_body": "章节正文缺失；请编辑此章并明确保存正文。",
+    "invalid_body_utf8": "正文编码无效；请检查正文后重新保存。",
+    "chapter_too_large": "正文超出 UTF-8 200 KiB 上限；请人工调整正文。",
+    "unsafe_link": "正文含不安全链接；请修改链接为无凭证的有效 HTTP(S) 地址。",
+    "image_placeholder": "图片已转为待补素材占位；请人工检查内容。",
+    "missing_outline": "缺少活动大纲；请先保存或生成大纲。",
+    "outline_unconfirmed": "精细模式的大纲尚未确认；请确认当前生成方向。",
+    "outline_too_large": "大纲章数超出上限；请检查大纲。",
+    "outline_project_mismatch": "大纲与项目不对应；请重新检查章节身份。",
+    "invalid_outline_chapter": "大纲章节身份无效；请检查大纲中的章节 ID。",
+    "duplicate_outline_chapter": "大纲章节身份重复；请检查大纲中的章节 ID。",
+    "duplicate_chapter": "章节身份重复；请重新检查大纲与正文对应关系。",
+    "unexpected_chapter": "正文与当前大纲不对应；请重新检查章节身份。",
+}
+
+
+def _finding_rows(findings, frozen, *, recorded=False):
+    """Presentation only: historical records never borrow a current title."""
+    active = {chapter.id for chapter in frozen.chapters}
+    titles = {item.chapter_id: item.title for item in frozen.outline.items} if frozen.outline else {}
+    rows = []
+    for finding in findings:
+        code = finding.get("code")
+        chapter_id = finding.get("chapter_id")
+        code = code if type(code) is str else "unknown_finding"
+        chapter_id = chapter_id if type(chapter_id) is str else None
+        rows.append(dict(code=code, chapter_id=chapter_id, blocking=finding.get("blocking") is not False,
+            message=_FINDING_MESSAGES.get(code, "未识别的检查发现；请根据记录代码人工检查。"),
+            title=titles.get(chapter_id) if not recorded else None,
+            editor_url=_base(frozen.project_id) + "/chapters/" + chapter_id if chapter_id in active else None))
+    return rows
+
+
 def _data(request, project_id):
     owner_objects(request)
     state = request.app.state
@@ -64,11 +103,24 @@ def _data(request, project_id):
         categories = [dict(row) for row in conn.execute("SELECT id,name FROM categories ORDER BY id")]
         snapshots = [dict(row) for row in conn.execute("SELECT id,project_revision,snapshot_hash,created_at FROM production_snapshots WHERE project_id=? ORDER BY id DESC", (project_id,))]
         last_check = conn.execute("SELECT * FROM draft_checks WHERE project_id=? ORDER BY id DESC LIMIT 1", (project_id,)).fetchone()
+    draft_check = validate_draft(frozen)
+    recorded = dict(last_check) if last_check else None
+    recorded_findings = []
+    if recorded:
+        try:
+            findings = json.loads(recorded["findings_json"])
+            if not isinstance(findings, list) or any(type(item) is not dict for item in findings):
+                raise ValueError
+        except (ValueError, TypeError):
+            findings = [{"code": "unknown_finding", "blocking": True}]
+        recorded_findings = _finding_rows(findings, frozen, recorded=True)
     return dict(project=project, frozen=frozen, candidates=candidates, chapter_flags={c["id"]: c for c in chapters},
-        project_jobs=jobs, categories=categories, snapshots=snapshots, recorded_check=dict(last_check) if last_check else None,
+        project_jobs=jobs, categories=categories, snapshots=snapshots, recorded_check=recorded,
+        current_findings=_finding_rows([dict(code=f.code, chapter_id=f.chapter_id, blocking=f.blocking)
+                                      for f in draft_check.findings], frozen), recorded_findings=recorded_findings,
         values=project.brief.model_dump(),
         outline_json=json.dumps([item.model_dump() for item in frozen.outline.items] if frozen.outline else [], ensure_ascii=False, indent=2),
-        settings=state.production_settings, draft_check=validate_draft(frozen))
+        settings=state.production_settings, draft_check=draft_check)
 
 
 async def _write(request, project_id, method, *args, **kwargs):

@@ -226,3 +226,78 @@ def test_60_chapter_budget_refusal_has_next_step(workbench_context, workbench_si
     assert site.projects.get(project_id).brief.chapter_count == 60
     assert site.config.task_token_limit == 200000
     assert site.jobs.list_jobs()[0] == []
+
+
+@pytest.mark.parametrize("nojs", [False, True], ids=["chrome", "nojs"])
+def test_owner_repairs_structural_findings_without_rewriting_history(real_browser, workbench_site, nojs):
+    from course_platform.database import transaction
+    site = workbench_site
+    context = real_browser.new_context(java_script_enabled=not nojs, viewport={"width": 390, "height": 844})
+    context.route("**/*", lambda route: route.continue_() if urlsplit(route.request.url).hostname == "127.0.0.1" else route.abort())
+    try:
+        page = context.new_page()
+        login_workbench(page, site)
+        project_id = create_workbench_project(page, site)
+        chapter = site.drafts.freeze_input(project_id).chapters[0]
+        base = f"{site.url}/admin/production/{project_id}"
+        page.goto(base + "/chapters/" + chapter.id)
+        page.locator('textarea[name="markdown"]').fill(BODY.split("## 总结")[0] + "## 总结\n")
+        page.get_by_role("button", name="保存正文", exact=True).click()
+        page.get_by_role("link", name="返回项目", exact=True).click()
+        page.get_by_role("button", name="记录草稿检查", exact=True).click()
+        with transaction(site.db) as conn:
+            recorded = tuple(conn.execute("SELECT * FROM draft_checks ORDER BY id DESC LIMIT 1").fetchone())
+        current = page.locator('[data-findings="current"]')
+        expect(current).to_contain_text("缺少总结")
+        expect(current).to_contain_text("阻断项")
+        repair = current.get_by_role("link", name="编辑此章", exact=True)
+        expect(repair).to_have_attribute("href", f"/admin/production/{project_id}/chapters/{chapter.id}")
+        repair.click()
+        assert page.url == base + "/chapters/" + chapter.id
+        expect(page.locator('[data-findings="current"]')).to_contain_text("缺少总结")
+        page.locator('textarea[name="markdown"]').fill(BODY)
+        page.get_by_role("button", name="保存正文", exact=True).click()
+        for path in (base, base + "/preview", base + "/chapters/" + chapter.id):
+            page.goto(path)
+            expect(page.locator('[data-findings="current"]')).not_to_contain_text("missing_summary")
+            expect(page.locator('[data-findings="recorded"]')).to_contain_text("missing_summary")
+            expect(page.locator('[data-findings="recorded"]')).to_contain_text("已过时")
+        with transaction(site.db) as conn:
+            assert tuple(conn.execute("SELECT * FROM draft_checks ORDER BY id DESC LIMIT 1").fetchone()) == recorded
+    finally:
+        context.close()
+
+
+def test_narrow_nojs_snapshot_contains_complete_locally_scrollable_raw_sources(real_browser, workbench_site):
+    from course_platform.production.models import ReferenceInput
+    from course_platform.production.snapshots import SnapshotService
+    site = workbench_site
+    context = real_browser.new_context(java_script_enabled=False, viewport={"width": 390, "height": 844})
+    context.route("**/*", lambda route: route.continue_() if urlsplit(route.request.url).hostname == "127.0.0.1" else route.abort())
+    try:
+        page = context.new_page()
+        login_workbench(page, site)
+        project_id = create_workbench_project(page, site)
+        reference = "R" * 19970 + "<script>raw()</script>"
+        note = "N" * 950
+        site.projects.save_reference(site.actor, project_id, site.projects.get(project_id).revision, None,
+                                     ReferenceInput(text=reference, source_note=note))
+        chapter = site.drafts.freeze_input(project_id).chapters[0]
+        source = BODY + "\n```\n" + "long_code_" * 1500 + "<script>raw()</script>\n```"
+        site.drafts.save_chapter(site.actor, project_id, chapter.id, None, source)
+        site.drafts.acknowledge_changes(site.actor, project_id, site.projects.get(project_id).revision, (chapter.id,))
+        snapshot = SnapshotService(site.db, site.drafts).create(site.actor, project_id, site.projects.get(project_id).revision)
+        page.goto(f"{site.url}/admin/production/{project_id}/snapshots/{snapshot.id}")
+        page.get_by_text("完整冻结交接数据（含渲染与提示词版本）", exact=True).click()
+        dimensions = page.evaluate("""() => ({width:innerWidth, document:document.documentElement.scrollWidth,
+          columns:getComputedStyle(document.querySelector('.production-columns')).gridTemplateColumns.split(' ').length,
+          raw:[...document.querySelectorAll('main pre')].map(e=>({text:e.textContent,width:e.clientWidth,
+              scroll:e.scrollWidth,overflow:getComputedStyle(e).overflowX}))})""")
+        assert dimensions["document"] <= dimensions["width"], "Raw snapshot source expands the viewport"
+        assert dimensions["columns"] == 1
+        for expected in (reference, note, source, snapshot.payload_json):
+            raw = next(item for item in dimensions["raw"] if item["text"] == expected)
+            assert raw["scroll"] > raw["width"] and raw["overflow"] == "auto"
+        assert page.locator("main script, main img, main iframe").count() == 0
+    finally:
+        context.close()

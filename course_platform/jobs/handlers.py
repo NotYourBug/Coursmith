@@ -16,7 +16,7 @@ from ..domain import BusinessError
 from ..production.checks import validate_draft
 from ..production.config import ProductionSettings
 from ..production.drafts import DraftService
-from ..production.llm import ModelClient, ModelFailure, ModelResult, Usage, parse_outline, retry_delay
+from ..production.llm import ModelClient, ModelFailure, ModelResult, OpenAIModel, Usage, parse_outline, retry_delay
 from ..production.models import ChapterView, ProductionInput
 from ..production.prompts import build_chapter_request, build_connection_request, build_outline_request
 from .budget import TokenBudget
@@ -143,13 +143,66 @@ class Handlers:
             self.budget.settle_in_tx(connection, call_id=self.call_id, usage=Usage(0, 0), status="rejected")
             connection.execute("UPDATE model_calls SET error_code=? WHERE id=?", (error.code, self.call_id))
 
+    def _before_send(self):
+        with transaction(self.repository.db_path, immediate=True) as connection:
+            self._fence(connection, new_work=True)
+            self._current_matches(connection)
+            self.config.require_execution(self.claim.config)
+
+    def _require_not_stopped(self):
+        # The thread-return boundary must also observe a just-delivered signal.
+        if self.stop is not None and self.stop.is_set():
+            raise BusinessError("worker_stopped", "工作进程正在停止，请明确恢复待处理工作。", 409)
+
+    async def _register_call(self, request):
+        registration = asyncio.create_task(asyncio.to_thread(self._begin, request))
+        try:
+            self.call_id = await asyncio.shield(registration)
+        except asyncio.CancelledError:
+            # A short registration transaction can finish after cancellation.
+            # Preserve its receipt so execute's isolation retains Unknown;
+            # waiting here never starts HTTP or invents a rejection/refund.
+            while not registration.done():
+                try:
+                    await asyncio.shield(registration)
+                except asyncio.CancelledError:
+                    # Nested deadlines or repeated stop signals must not lose
+                    # the original receipt or replace the active cancellation.
+                    pass
+                except Exception:
+                    break
+            if not registration.cancelled():
+                try:
+                    self.call_id = registration.result()
+                except Exception:
+                    # Observe a failed registration without masking the
+                    # original cancellation. No receipt means no new call.
+                    pass
+            raise
+
     async def _call(self, request):
         self.result = None
         for retry in range(3):
-            self.call_id = await asyncio.to_thread(self._begin, request)
+            self.call_id = None
             try:
-                async with timeout(self.config.timeout_seconds):
-                    self.result = await self.model.generate(request, deadline_seconds=self.config.timeout_seconds)
+                if isinstance(self.model, OpenAIModel):
+                    async with timeout(self.config.timeout_seconds):
+                        async with self.model.prepared(request, deadline_seconds=self.config.timeout_seconds) as call:
+                            # Preparation does not imply a sent request/reserve.
+                            # Recheck all authority after its await and after the
+                            # registration await before entering async HTTP.
+                            await asyncio.to_thread(self._before_send)
+                            self._require_not_stopped()
+                            call.require_ready()
+                            await self._register_call(request)
+                            await asyncio.to_thread(self._before_send)
+                            self._require_not_stopped()
+                            self.result = await call.generate()
+                else:
+                    # Keep the existing injected async ModelClient contract.
+                    await self._register_call(request)
+                    async with timeout(self.config.timeout_seconds):
+                        self.result = await self.model.generate(request, deadline_seconds=self.config.timeout_seconds)
                 self._valid_result(self.result)
                 return
             except ModelFailure as error:

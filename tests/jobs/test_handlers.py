@@ -142,6 +142,167 @@ def test_key_rotation_preserves_frozen_execution(jobs_context):
     assert r.c.service.get(r.job.id).state == "succeeded" and len(r.model.calls) == 1
 
 
+def test_cancel_during_adapter_call_registration_retains_unknown_receipt(jobs_context, read_rows, monkeypatch):
+    import threading
+    import httpx
+    from course_platform.jobs.handlers import Handlers
+    from course_platform.production.llm import OpenAIModel
+    from tests.jobs.fakes import ModelTransport
+
+    entered, release = threading.Event(), threading.Event()
+    r = setup_run(jobs_context, kind="connection_test")
+    original = Handlers._begin
+    def registering(self, request):
+        call_id = original(self, request)
+        entered.set()
+        assert release.wait(3)
+        return call_id
+    monkeypatch.setattr(Handlers, "_begin", registering)
+
+    async def exercise():
+        transport = ModelTransport([])
+        async with httpx.AsyncClient(transport=transport) as client:
+            r.model = OpenAIModel(r.c.execution_config, http_client=client)
+            task = asyncio.create_task(worker(r).run_once())
+            try:
+                assert await asyncio.to_thread(entered.wait, 45)
+                task.cancel()
+                release.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                call = read_rows("SELECT * FROM model_calls")[0]
+                reserve = read_rows("SELECT * FROM token_reservations WHERE call_id=?", (call["id"],))[0]
+                assert call["status"] == "unknown", "Registration receipt was lost at cancellation"
+                assert reserve["state"] == "unknown" and reserve["released_tokens"] == 0
+                assert transport.calls == []
+                assert client.event_hooks["response"] == [] and not client.is_closed
+            finally:
+                release.set()
+                if not task.done():
+                    await task
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("cancellation", ["nested_deadlines", "repeated_external", "registration_failure"])
+def test_adapter_registration_outcome_survives_repeated_cancellation(
+    jobs_context, read_rows, monkeypatch, caplog, cancellation,
+):
+    import logging
+    import threading
+
+    import httpx
+    from course_platform.jobs import handlers
+    from course_platform.production import llm
+
+    __import__("openai")  # Preload the installed SDK before the registration gate.
+    r = setup_run(jobs_context, existing=True, bodies=True, kind="chapter_regenerate")
+    frozen = r.c.drafts.freeze_input(r.p.id)
+    entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+    original_begin = handlers.Handlers._begin
+    original_timeout_at = asyncio.timeout_at
+    deadlines, http_calls = [], []
+    executions = []
+
+    def registering(execution, request):
+        executions.append(execution)
+        call_id = None if cancellation == "registration_failure" else original_begin(execution, request)
+        entered.set()
+        try:
+            assert release.wait(3), "Bounded receipt gate was not released"
+            if cancellation == "registration_failure":
+                raise ValueError("private-registration-failure/fake-private-key")
+            return call_id
+        finally:
+            returned.set()
+
+    def deadline(_seconds):
+        context = original_timeout_at(None)
+        deadlines.append(context)
+        return context
+
+    async def forbidden_http(request):
+        http_calls.append(request)
+        raise AssertionError("Cancelled registration started HTTP")
+
+    monkeypatch.setattr(handlers.Handlers, "_begin", registering)
+    if cancellation == "nested_deadlines":
+        monkeypatch.setattr(handlers, "timeout", deadline)
+        monkeypatch.setattr(asyncio, "timeout_at", deadline)
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(forbidden_http)) as client:
+            r.model = llm.OpenAIModel(r.c.execution_config, http_client=client)
+            task = asyncio.create_task(worker(r).run_once())
+            try:
+                assert await asyncio.to_thread(entered.wait, 3), "Registration was never reached"
+                if cancellation == "nested_deadlines":
+                    assert len(deadlines) == 2
+                    loop = asyncio.get_running_loop()
+                    deadlines[0].reschedule(loop.time() + .02)
+                    deadlines[1].reschedule(loop.time() + .04)
+                    async with original_timeout_at(loop.time() + 1):
+                        while not all(context.expired() for context in deadlines):
+                            await asyncio.sleep(.005)
+                    assert all(context.expired() for context in deadlines)
+                else:
+                    task.cancel("original-worker-stop")
+                    await asyncio.sleep(0)  # Deliver the first signal while the receipt stays held.
+                    if cancellation == "repeated_external":
+                        task.cancel("second-worker-stop")
+                        await asyncio.sleep(0)
+                release.set()
+                if cancellation == "nested_deadlines":
+                    assert await task is True
+                    job = r.c.service.get(r.job.id)
+                    assert (job.state, job.reason_code) == ("failed", "response_unknown")
+                else:
+                    with pytest.raises(asyncio.CancelledError) as cancelled:
+                        await task
+                    assert cancelled.value.args == ("original-worker-stop",)
+                    # External task cancellation isolates the original attempt;
+                    # unchanged explicit maintenance owns later interruption.
+                    assert r.c.service.get(r.job.id).state == "running"
+                assert await asyncio.to_thread(returned.wait, 1)
+                await asyncio.sleep(0)
+                calls = read_rows("SELECT * FROM model_calls")
+                reserves = read_rows("SELECT * FROM token_reservations WHERE call_id IS NOT NULL")
+                if cancellation == "registration_failure":
+                    assert calls == [] and reserves == []
+                    assert executions[0].call_id is None
+                else:
+                    assert len(calls) == len(reserves) == 1
+                    call, reserve = calls[0], reserves[0]
+                    assert executions[0].call_id == call["id"] == reserve["call_id"]
+                    assert call["status"] == reserve["state"] == "unknown"
+                    assert call["response_disposition"] == (
+                        "active" if cancellation == "nested_deadlines" else "isolated")
+                    assert call["error_code"] == (
+                        "response_unknown" if cancellation == "nested_deadlines" else "worker_stopped")
+                    assert call["response_text"] is None and call["response_hash"] is None
+                    assert call["input_tokens"] is None and call["output_tokens"] is None
+                    assert reserve["used_tokens"] is None and reserve["released_tokens"] == 0
+                assert http_calls == []
+                assert client.event_hooks["response"] == [] and not client.is_closed
+                assert llm._PRIVATE_CALL.get() is False
+                assert r.c.drafts.freeze_input(r.p.id) == frozen
+                assert not read_rows("SELECT * FROM production_candidates")
+                assert not [pending for pending in asyncio.all_tasks()
+                            if pending is not asyncio.current_task() and not pending.done()]
+            finally:
+                release.set()
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(exercise())
+    assert "private-registration-failure" not in caplog.text
+    assert "fake-private-key" not in caplog.text
+
+
 def test_unknown_usage_response_stops_spending_and_retains_private_history(jobs_context, read_rows):
     from course_platform.production.llm import ModelResult
     r = setup_run(jobs_context, existing=True, kind="chapters_generate",

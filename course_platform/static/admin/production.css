@@ -9,6 +9,9 @@
 .production-page summary { cursor: pointer; font-weight: 600; }
 .editor-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.5rem; align-items: start; }
 .editor-columns > section { min-width: 0; }
+.production-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+.production-columns > div { min-width: 0; }
+.production-raw { min-width: 0; max-width: 100%; overflow-x: auto; white-space: pre; padding: .75rem; background: #f3f6f5; }
 .markdown-toolbar { display: flex; flex-wrap: wrap; gap: .4rem; }
 .markdown-toolbar[hidden] { display: none; }
 .markdown-toolbar button { padding: .4rem .65rem; background: #e5efec; color: #155e56; }
@@ -20,6 +23,7 @@
 .nojs-note { color: #465f56; font-size: .9rem; }
 @media (max-width: 700px) {
   .editor-columns { grid-template-columns: minmax(0, 1fr); }
+  .production-columns { grid-template-columns: minmax(0, 1fr); }
   .production-page main { margin: .75rem; padding: 1rem; }
   .production-page header form { margin-left: 0; }
 }

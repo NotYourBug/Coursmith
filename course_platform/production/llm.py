@@ -7,6 +7,9 @@ import contextvars
 import json
 import logging
 import re
+import sys
+import threading
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -195,6 +198,16 @@ async def _bound_response(response: httpx.Response):
             True if 200 <= response.status_code < 300 else None)
 
 
+async def _close_owned_client(client):
+    failed = False
+    try:
+        await client.aclose()
+    except Exception:
+        failed = True
+    if failed:
+        raise ModelFailure("response_unknown", accepted=None)
+
+
 class _AcceptanceTransport(httpx.AsyncHTTPTransport):
     async def handle_async_request(self, request):
         # The installed HTTPX transport feeds request.stream into httpcore.
@@ -225,53 +238,94 @@ class OpenAIModel:
             if not any(isinstance(item,_PrivateLogFilter) for item in logger.filters):
                 logger.addFilter(_PrivateLogFilter())
 
-    async def generate(self, request: ModelRequest, *, deadline_seconds: int = 120) -> ModelResult:
+    def _bootstrap(self, deadline_seconds, state, lock):
+        """Blocking initialization only. This thread must never issue HTTP."""
+        client = None
+        bundle = None
+        failed = False
+        try:
+            from openai import AsyncOpenAI, APIStatusError
+
+            client = self.http_client or httpx.AsyncClient(transport=_AcceptanceTransport(retries=0),
+                trust_env=False, follow_redirects=False, timeout=deadline_seconds)
+            sdk = AsyncOpenAI(api_key=self.config.api_key, base_url=self.config.base_url,
+                             http_client=client, max_retries=0, timeout=deadline_seconds)
+            bundle = (sdk, client, APIStatusError)
+        except Exception:
+            failed = True
+        with lock:
+            abandoned = state["abandoned"]
+            if not abandoned:
+                state["bundle"] = bundle
+        if (abandoned or failed) and client is not None and self.http_client is None:
+            # No request has begun: the unbound client's cleanup can finish on
+            # this thread even if the calling event loop has already closed.
+            asyncio.run(_close_owned_client(client))
+        if failed:
+            raise ModelFailure("response_unknown", accepted=None)
+        return bundle
+
+    @asynccontextmanager
+    async def prepared(self, request: ModelRequest, *, deadline_seconds: int = 120):
+        """Lazy preparation before ledger admission, with no background send.
+
+        The context owns its client; an injected client's lifetime stays with
+        its caller. A cancelled initializer closes its late owned result.
+        """
+        if type(deadline_seconds) is not int or not 1 <= deadline_seconds <= 120:
+            raise BusinessError("invalid_model_deadline", "模型调用截止时间无效。", 409)
+        deadline = asyncio.get_running_loop().time() + deadline_seconds
         self.config.require_execution(request.config)
         from .prompts import require_request_limits
 
         require_request_limits(request)
         estimated_tokens(request)
-        if type(deadline_seconds) is not int or not 1<=deadline_seconds<=120:
-            raise BusinessError("invalid_model_deadline","模型调用截止时间无效。",409)
-        from openai import AsyncOpenAI
-
         marker = _PRIVATE_CALL.set(True)
-        outcome = None
-        client = self.http_client or httpx.AsyncClient(transport=_AcceptanceTransport(retries=0),trust_env=False,follow_redirects=False,timeout=deadline_seconds)
-        client.event_hooks["response"].insert(0, _bound_response)
+        state, lock = {"abandoned": False, "bundle": None}, threading.Lock()
+        bundle = None
+        hooked = False
         try:
-            async with AsyncOpenAI(api_key=self.config.api_key,base_url=self.config.base_url,http_client=client,max_retries=0,timeout=deadline_seconds) as sdk:
-                async with asyncio.timeout(deadline_seconds):
-                    async with sdk.chat.completions.with_streaming_response.create(
-                        messages=request.messages,model=request.config.model,max_tokens=request.max_output_tokens,stream=False,
-                        extra_body={"thinking":{"type":"disabled"}}
-                    ) as response:
-                        body = bytearray()
-                        async for chunk in response.iter_bytes():
-                            # Bounded raw envelope accommodates escaped 200KiB text.
-                            if len(body)+len(chunk)>MAX_PAYLOAD_BYTES:
-                                outcome = ModelFailure("output_too_large",accepted=True)
-                                break
-                            body.extend(chunk)
-                        if outcome is None:
-                            outcome = self._result(bytes(body),request)
-        except Exception as exc:
-            from openai import APIStatusError
-            if isinstance(exc,APIStatusError) and exc.status_code in (401,403):
-                outcome = ModelFailure("authentication",accepted=None)
-            elif isinstance(exc.__cause__,_NeverSent):
-                outcome = ModelFailure("not_sent",accepted=False)
-            elif isinstance(exc,_ResponseLimit):
-                outcome = ModelFailure("output_too_large" if exc.accepted else "response_unknown",accepted=exc.accepted)
-            elif isinstance(exc,ModelFailure):
-                outcome = ModelFailure(exc.code,exc.accepted)
-            else:
-                outcome = ModelFailure("response_unknown",accepted=None)
+            async with asyncio.timeout_at(deadline):
+                bundle = await asyncio.to_thread(self._bootstrap, deadline_seconds, state, lock)
+                call = _PreparedCall(self, request, bundle, deadline)
+                call.require_ready()
+                bundle[1].event_hooks["response"].insert(0, _bound_response)
+                hooked = True
+                yield call
         finally:
-            client.event_hooks["response"].remove(_bound_response)
-            _PRIVATE_CALL.reset(marker)
+            active_error = sys.exception()
+            close_failed = False
+            # Hand off cleanup atomically: either this coroutine received the
+            # initialized client, or the late initializer owns its disposal.
+            with lock:
+                state["abandoned"] = True
+                bundle = bundle or state["bundle"]
+            try:
+                if bundle:
+                    if hooked:
+                        bundle[1].event_hooks["response"].remove(_bound_response)
+                    if self.http_client is None:
+                        try:
+                            # Installed SDK.close only closes this HTTP client.
+                            await asyncio.shield(_close_owned_client(bundle[1]))
+                        except ModelFailure:
+                            close_failed = True
+            finally:
+                _PRIVATE_CALL.reset(marker)
+            if close_failed and active_error is None:
+                raise ModelFailure("response_unknown", accepted=None)
+
+    async def generate(self, request: ModelRequest, *, deadline_seconds: int = 120) -> ModelResult:
+        outcome = None
+        try:
+            async with self.prepared(request, deadline_seconds=deadline_seconds) as call:
+                outcome = await call.generate()
+        except TimeoutError:
+            outcome = ModelFailure("response_unknown", accepted=None)
+        except ModelFailure as exc:
+            outcome = ModelFailure(exc.code, exc.accepted)
         # Raise outside the SDK except suite: no raw exception context retained.
-        if isinstance(outcome,ModelFailure):
+        if isinstance(outcome, ModelFailure):
             raise outcome
         return outcome
 
@@ -308,3 +362,57 @@ class OpenAIModel:
         if failed:
             raise ModelFailure(failed,accepted=True)
         return ModelResult(text,usage,request_id)
+
+
+class _PreparedCall:
+    """One initialized adapter call; network execution always stays async."""
+
+    def __init__(self, model, request, bundle, deadline):
+        self.model, self.request, self.bundle, self.deadline = model, request, bundle, deadline
+
+    def require_ready(self):
+        self._require_deadline()
+        self.model.config.require_execution(self.request.config)
+
+    def _require_deadline(self):
+        if asyncio.current_task().cancelling():
+            raise asyncio.CancelledError
+        if asyncio.get_running_loop().time() >= self.deadline:
+            raise ModelFailure("response_unknown", accepted=None)
+
+    async def generate(self):
+        self.require_ready()
+        sdk, _, status_error = self.bundle
+        request = self.request
+        outcome = None
+        try:
+            async with sdk.chat.completions.with_streaming_response.create(
+                messages=request.messages, model=request.config.model, max_tokens=request.max_output_tokens,
+                stream=False, extra_body={"thinking": {"type": "disabled"}}
+            ) as response:
+                self._require_deadline()
+                body = bytearray()
+                async for chunk in response.iter_bytes():
+                    self._require_deadline()
+                    if len(body) + len(chunk) > MAX_PAYLOAD_BYTES:
+                        outcome = ModelFailure("output_too_large", accepted=True)
+                        break
+                    body.extend(chunk)
+                if outcome is None:
+                    outcome = self.model._result(bytes(body), request)
+                self._require_deadline()
+        except Exception as exc:
+            if isinstance(exc, status_error) and exc.status_code in (401, 403):
+                outcome = ModelFailure("authentication", accepted=None)
+            elif isinstance(exc.__cause__, _NeverSent):
+                outcome = ModelFailure("not_sent", accepted=False)
+            elif isinstance(exc, _ResponseLimit):
+                outcome = ModelFailure("output_too_large" if exc.accepted else "response_unknown", accepted=exc.accepted)
+            elif isinstance(exc, ModelFailure):
+                outcome = ModelFailure(exc.code, exc.accepted)
+            else:
+                outcome = ModelFailure("response_unknown", accepted=None)
+        if isinstance(outcome, ModelFailure):
+            raise outcome
+        self._require_deadline()
+        return outcome

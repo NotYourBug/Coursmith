@@ -118,7 +118,8 @@ def test_kill_worker_after_vendor_accept_does_not_replay_on_restart(processes):
     h.clock.advance(seconds=120)
     h.write_clock()
     restarted = ready_worker(h, supplier)
-    assert wait_until(lambda: h.jobs.get(job.id).state == "interrupted")
+    assert wait_until(lambda: h.jobs.get(job.id).state == "interrupted" and
+                      h.rows("SELECT status FROM model_calls WHERE id=?", (call["id"],))[0]["status"] == "unknown")
     assert len(supplier.requests) == 1
     old = h.rows("SELECT * FROM model_calls WHERE id=?", (call["id"],))[0]
     assert old["status"] == "unknown" and old["input_tokens"] is None and old["output_tokens"] is None

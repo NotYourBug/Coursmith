@@ -282,3 +282,171 @@ def test_flash_wire_disables_thinking_and_key_rotation_still_sends_once(tmp_path
     assert sent==serialize_model_payload(request)
     assert transport.calls[0][2]["authorization"]=="Bearer rotated-private-key"
     assert b"rotated-private-key" not in sent
+
+
+@pytest.mark.parametrize("owned", [True, False], ids=["owned", "injected"])
+def test_adapter_total_deadline_includes_cold_sdk_and_cleans_clients(tmp_path, monkeypatch, owned):
+    import builtins
+    import time
+    from types import SimpleNamespace
+    from course_platform.production import llm
+    from course_platform.production.prompts import build_connection_request
+
+    config = production_settings(tmp_path)
+    clients, sends = [], []
+    original_client, original_import = httpx.AsyncClient, builtins.__import__
+    def tracked_client(**kwargs):
+        client = original_client(transport=httpx.MockTransport(lambda request: (
+            sends.append(request), httpx.Response(200, content=response_body()))[1]), trust_env=False)
+        clients.append(client)
+        return client
+    class SDK:
+        def __init__(self, **kwargs):
+            self.client = kwargs["http_client"]
+            self.chat = SimpleNamespace(completions=SimpleNamespace(with_streaming_response=self))
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            await self.close()
+        async def close(self):
+            await self.client.aclose()
+        def create(self, **kwargs):
+            sends.append(kwargs)
+            class Response:
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, *args):
+                    pass
+                async def iter_bytes(self):
+                    yield response_body()
+            return Response()
+    def cold(name, *args, **kwargs):
+        if name == "openai":
+            time.sleep(1.10)
+            return SimpleNamespace(AsyncOpenAI=SDK, APIStatusError=type("Status", (Exception,), {}))
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", tracked_client)
+    monkeypatch.setattr(llm, "_AcceptanceTransport", lambda **kwargs: httpx.MockTransport(
+        lambda _: (_ for _ in ()).throw(AssertionError("No HTTP during preparation"))))
+    monkeypatch.setattr(builtins, "__import__", cold)
+
+    async def exercise():
+        supplied = None if owned else tracked_client()
+        try:
+            with pytest.raises(llm.ModelFailure) as denied:
+                await llm.OpenAIModel(config, http_client=supplied).generate(
+                    build_connection_request(config.public), deadline_seconds=1)
+            assert denied.value.accepted is None and denied.value.__context__ is None
+            await asyncio.sleep(.20)  # bounded late bootstrap completion/cleanup
+            assert sends == [], "No HTTP may start after the admitted total deadline"
+            assert len(clients) == 1 and clients[0].is_closed is owned
+            assert clients[0].event_hooks["response"] == []
+        finally:
+            if supplied is not None:
+                await supplied.aclose()
+    asyncio.run(exercise())
+
+
+def test_prepared_call_does_not_enter_sdk_when_cancellation_is_pending(tmp_path, monkeypatch):
+    import builtins
+    from types import SimpleNamespace
+    from course_platform.production.llm import OpenAIModel
+    from course_platform.production.prompts import build_connection_request
+
+    original = builtins.__import__
+    sends = []
+    class SDK:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(with_streaming_response=self))
+        def create(self, **kwargs):
+            sends.append(kwargs)
+            raise AssertionError("SDK must not be entered after cancellation")
+    def imported(name, *args, **kwargs):
+        if name == "openai":
+            return SimpleNamespace(AsyncOpenAI=SDK, APIStatusError=type("Status", (Exception,), {}))
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", imported)
+    config = production_settings(tmp_path)
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=ModelTransport([])) as client:
+            async with OpenAIModel(config, http_client=client).prepared(build_connection_request(config.public)) as call:
+                current = asyncio.current_task()
+                current.cancel()
+                try:
+                    with pytest.raises(asyncio.CancelledError):
+                        await call.generate()
+                finally:
+                    # Consume the scheduled cancellation before leaving the
+                    # owned test loop; preserve the production cancellation.
+                    current.uncancel()
+                    try:
+                        await asyncio.sleep(0)
+                    except asyncio.CancelledError:
+                        pass
+            assert sends == []
+            assert client.event_hooks["response"] == []
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("construction_fails", [False, True], ids=["response-cleanup", "initialization-cleanup"])
+def test_owned_cleanup_errors_never_expose_sdk_text(tmp_path, monkeypatch, caplog, construction_fails):
+    import openai
+    from course_platform.production import llm
+    from course_platform.production.prompts import build_connection_request
+
+    class ClosingTransport(ModelTransport):
+        async def aclose(self):
+            raise RuntimeError("fake-private-key/private-cleanup-source")
+    transport = ClosingTransport([response_body()])
+    clients = []
+    original = httpx.AsyncClient
+    class OwnedClient(original):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            clients.append(self)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", OwnedClient)
+    monkeypatch.setattr(llm, "_AcceptanceTransport", lambda **kwargs: transport)
+    if construction_fails:
+        def rejected_constructor(self, **kwargs):
+            raise RuntimeError("fake-private-key/private-constructor-source")
+        monkeypatch.setattr(openai.AsyncOpenAI, "__init__", rejected_constructor)
+    config = production_settings(tmp_path)
+    with caplog.at_level(logging.DEBUG), pytest.raises(llm.ModelFailure) as denied:
+        asyncio.run(llm.OpenAIModel(config).generate(build_connection_request(config.public)))
+    assert denied.value.accepted is None and denied.value.__context__ is None
+    assert "fake-private-key" not in caplog.text + str(denied.value) + repr(denied.value)
+    assert "private-cleanup-source" not in caplog.text
+    assert len(clients) == 1 and clients[0].is_closed
+    assert clients[0].event_hooks["response"] == []
+    assert len(transport.calls) == (0 if construction_fails else 1)
+
+
+def test_immediate_response_still_obeys_absolute_total_deadline(tmp_path):
+    from course_platform.production.llm import ModelFailure, OpenAIModel
+    from course_platform.production.prompts import build_connection_request
+    config = production_settings(tmp_path)
+
+    async def exercise():
+        loop = asyncio.get_running_loop()
+        original, elapsed = loop.time, [0]
+        start = original()
+        loop.time = lambda: start + elapsed[0]
+        class ImmediateTransport(ModelTransport):
+            async def handle_async_request(self, request):
+                content = await request.aread()
+                self.calls.append(content)
+                elapsed[0] = 121
+                # An already-buffered response yields without another loop
+                # scheduling point. Its elapsed time still counts toward120.
+                return httpx.Response(200, content=response_body(), request=request)
+        transport = ImmediateTransport([])
+        try:
+            async with httpx.AsyncClient(transport=transport) as client:
+                with pytest.raises(ModelFailure) as denied:
+                    await OpenAIModel(config, http_client=client).generate(build_connection_request(config.public))
+                assert denied.value.accepted is None and denied.value.code == "response_unknown"
+                assert len(transport.calls) == 1 and client.event_hooks["response"] == []
+        finally:
+            loop.time = original
+    asyncio.run(exercise())

@@ -3,5 +3,6 @@
 {% block content %}
 <h1>安全预览</h1><p><a href="/admin/production/{{ project.id }}">返回项目</a> · {{ project.brief.title }} · 项目修订 {{ project.revision }}。</p>
 <p>仅展示已保存正文。{% if not draft_check.blocking %}结构检查通过；{% else %}结构检查仍有阻断项；{% endif %}人工待审核，事实、来源和教学价值需要人工检查。</p>
+{% include "admin/production/_findings.html" %}
 {% for chapter, result in rendered %}<section><h2>{{ frozen.outline.items[loop.index0].title }}</h2><p><a href="/admin/production/{{ project.id }}/chapters/{{ chapter.id }}">编辑本章</a> · 正文修订 {{ chapter.body_revision if chapter.body_revision is not none else '空白' }}</p><div class="production-preview">{{ result.html|safe }}</div>{% for finding in result.findings %}<p>{{ finding.code }}</p>{% endfor %}</section>{% else %}<p>尚无活动章节，请先创建大纲。</p>{% endfor %}
 {% endblock %}

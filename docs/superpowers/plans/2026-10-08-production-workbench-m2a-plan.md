@@ -230,6 +230,8 @@ def test_utf8_fallback_is_payload_bytes_plus_2048(model_config, token_budget):
 
 ## Task 7：独立 worker 与双模式生成编排
 
+最终整批修正的内部接口补记（Ruling22/23，仅调用准备及登记回执边界）：实际 `OpenAIModel.prepared(request, *, deadline_seconds=120)` 是异步上下文，在线程中仅准备 SDK/HTTP 客户端，交出仅异步发送的一次调用对象；原 `ModelClient.generate` 签名及测试替身兼容不变。Handlers 在准备完成后及登记调用后重验既有执行栅栏；短登记已提交的回执在嵌套截止或重复取消下仍先取回并绑定原调用，再传播原始取消供 Unknown 隔离，不继续发送 HTTP、追加调用或释放未知预留。绝对总截止时间、独立心跳及原额度规则不变。Files 仅涉及本项既有 handlers/test_handlers/test_worker 与 Task6 既有 llm/test_llm；没有新增产品端点、配置或 schema。
+
 **Files:** Create jobs/worker.py、handlers.py、tests/jobs/test_worker.py、test_handlers.py；Modify生产 events.py/audit.py 固定 worker 事件；不在 app 中启动 worker。
 
 **Interfaces:** Worker(repository:JobRepository, drafts:DraftService, budget:TokenBudget, model:ModelClient, config:ProductionSettings, *, worker_id:str, clock:Clock=utc_now)；run_once()->bool（async）；run_forever(stop:asyncio.Event)->None（async）。Handlers.execute(claim:Claim, *, drafts:DraftService, repository:JobRepository, budget:TokenBudget, model:ModelClient, config:ProductionSettings)->None（async）；每步调用前/结果保存前在同一写事务 require_attempt_in_tx，结合 Task3 in_tx 写正文与Task6调用账目。
