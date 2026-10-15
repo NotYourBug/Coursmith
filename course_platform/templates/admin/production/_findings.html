@@ -1,7 +1,10 @@
 <section data-findings="current" aria-label="当前草稿检查">
 <h2>当前草稿检查</h2>
-<p>当前项目修订 {{ project.revision }} · 输入 SHA-256：<code>{{ draft_check.input_hash }}</code>。</p>
-<ul>{% for finding in current_findings %}<li><strong>{{ '阻断项' if finding.blocking else '人工检查提醒' }}</strong>：{{ finding.message }} <code>{{ finding.code }}</code>{% if finding.chapter_id %} · {{ finding.title if finding.title else '章节' }} · ID <code>{{ finding.chapter_id }}</code>{% endif %}{% if finding.editor_url %} · <a href="{{ finding.editor_url }}">编辑此章</a>{% endif %}</li>{% else %}<li>当前没有结构发现。</li>{% endfor %}</ul>
+<p class="check-summary">{{ '有阻断项，交接前需要处理。' if draft_check.blocking else '当前结构检查无阻断项。' }}项目修订 {{ project.revision }}。</p>
+<details class="finding-details"{% if '/chapters/' not in request.url.path %} open{% endif %}><summary>查看 {{ current_findings|length }} 项检查发现</summary>
+<ul class="finding-list">{% for finding in current_findings %}<li><div class="finding-copy"><strong>{{ '阻断项' if finding.blocking else '人工检查提醒' }}{% if finding.title %} · {{ finding.title }}{% endif %}</strong><p>{{ finding.message }}</p>{% if finding.editor_url %}<a href="{{ finding.editor_url }}">编辑此章 <span aria-hidden="true">→</span></a>{% endif %}</div><details class="finding-meta"><summary>技术详情</summary><code>{{ finding.code }}</code>{% if finding.chapter_id %}<p>章节 ID：<code>{{ finding.chapter_id }}</code></p>{% endif %}</details></li>{% else %}<li>当前没有结构发现。</li>{% endfor %}</ul>
+<details class="finding-meta"><summary>修订与校验信息</summary><p>当前项目修订 {{ project.revision }} · 输入 SHA-256：<code>{{ draft_check.input_hash }}</code>。</p></details>
+</details>
 <p>人工待审核：结构检查不能替代事实、来源授权和教学价值的人工检查。</p>
 </section>
 {% if recorded_check %}

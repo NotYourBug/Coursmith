@@ -325,7 +325,12 @@ def test_dashboard_counts_real_recorded_delivery(delivery_client, active_product
         external_order_id="pending-delivery", product_id=active_product.id, paid_cents=100,
         paid_at=clock.now(), note="Payment checked"), "pending")
     login(client)
-    assert "<dt>待交付订单</dt><dd>1</dd>" in client.get("/admin").text
+    # Read the labelled value even when the redesigned label contains a link
+    # and supporting copy; the real pending-order count remains the assertion.
+    counts = [(re.sub(r"<[^>]+>", "", label), int(value))
+              for label, value in re.findall(r"<dt>(.*?)</dt>\s*<dd>(\d+)</dd>",
+                  client.get("/admin").text, re.S)]
+    assert next(value for label, value in counts if label.startswith("待交付订单")) == 1
 
 
 def test_unmatched_admin_errors_remain_private_with_admin_csp(delivery_client):

@@ -1,8 +1,18 @@
 {% extends "admin/base.html" %}
+{% block title %}运营总览 · 智课工坊{% endblock %}
 {% block content %}
-<h1>运营总览</h1>
-<dl><dt>草稿商品</dt><dd>{{ counts.drafts }}</dd><dt>待核验历史权益</dt><dd>{{ counts.verification }}</dd><dt>待核验历史码</dt><dd>{{ counts.codes }}</dd><dt>待交付订单</dt><dd>{{ counts.delivery }}</dd><dt>已激活订单</dt><dd>{{ counts.activated }}</dd></dl>
-<p>课程正文编辑、站内支付与公开生成功能不在当前阶段提供。</p>
-<h2>近期审计</h2><a href="/admin/audit">查询审计记录</a>
-<ul>{% for event in events %}<li>{{ event.created_at }} · owner {{ event.actor_admin_id or '—' }} · {{ event.action }} · {{ event.object_type }} {{ event.object_id }} · {{ event.outcome }}</li>{% endfor %}</ul>
+<div class="workspace-heading"><div><h1>运营总览</h1><p>从课程制作到交付，在这里安排今天的工作。</p></div>{% if request.app.state.production_service is defined %}<a class="button" href="/admin/production/new"><span aria-hidden="true">+</span> 新建课程</a>{% endif %}</div>
+<div class="dashboard-layout">
+  <section class="dashboard-panel"><div class="panel-heading"><h2>待办事项</h2><span>当前工作区</span></div>
+    <dl class="task-overview">
+      <div><dt><a href="/admin/products">草稿商品</a><span>完善内容与销售设置</span></dt><dd>{{ counts.drafts }}</dd></div>
+      <div><dt><a href="/admin/orders">待交付订单</a><span>核验付款并交付激活码</span></dt><dd>{{ counts.delivery }}</dd></div>
+      <div><dt>待核验历史权益<span>确认原记录与买家权益</span></dt><dd>{{ counts.verification }}</dd></div>
+      <div><dt><a href="/admin/legacy-codes">待核验历史码</a><span>核验历史发行记录</span></dt><dd>{{ counts.codes }}</dd></div>
+    </dl>
+    <div class="activation-note"><span class="status-dot"></span>已激活订单 <strong>{{ counts.activated }}</strong></div>
+  </section>
+  <section class="dashboard-start"><svg class="workspace-art" viewBox="0 0 180 100" aria-hidden="true"><path d="M30 25h50c10 0 10 7 10 7v55c0-7-15-10-60-10zM150 25h-50c-10 0-10 7-10 7v55c0-7 15-10 60-10zM43 40h26M43 52h26M110 40h26M110 52h26"/><path d="M145 8v10M140 13h10"/></svg><h2>把下一门好课，<br>从这里做出来。</h2><p>整理需求，制作草稿，再逐章检查。让每一份知识都有清晰的学习路径。</p>{% if request.app.state.production_service is defined %}<a href="/admin/production">查看制作项目 <span aria-hidden="true">→</span>{% else %}<a href="/admin/products">查看商品列表 <span aria-hidden="true">→</span>{% endif %}</section>
+</div>
+<section class="dashboard-panel activity-panel"><div class="panel-heading"><h2>近期审计</h2><a href="/admin/audit">查询审计记录 <span aria-hidden="true">→</span></a></div><p class="table-hint">左右滑动，查看操作对象与完整时间。</p><div class="table-wrap" tabindex="0" aria-label="近期审计记录，可横向滚动"><table><thead><tr><th>操作与对象</th><th>操作人</th><th>结果</th><th>时间（上海）</th></tr></thead><tbody>{% for event in events %}<tr><td><strong>{{ event.action }}</strong><small>{{ event.object_type }} {{ event.object_id }}</small></td><td>owner {{ event.actor_admin_id or '—' }}</td><td><span class="status-badge">{{ event.outcome }}</span></td><td>{{ event.created_at }}</td></tr>{% else %}<tr><td colspan="4" class="empty-cell">暂无审计记录。工作区操作后，记录会显示在这里。</td></tr>{% endfor %}</tbody></table></div></section>
 {% endblock %}
