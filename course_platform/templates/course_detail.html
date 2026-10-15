@@ -1,3 +1,16 @@
 {% extends "base.html" %}
 {% block title %}{{ course.title }}｜智课工坊{% endblock %}
-{% block content %}<article class="course-detail"><h1>{{ course.title }}</h1><p>{{ course.synopsis }}</p><p>适合：{{ course.audience }} · 前置要求：{{ course.prerequisites }}</p><h2>学完后你将能够</h2><ul>{% for outcome in course.outcomes %}<li>{{ outcome }}</li>{% endfor %}</ul>{% if course.status == 'active' %}<nav aria-label="店铺购买">{% for channel in course.channels %}<a class="button" href="{{ channel.url }}" rel="noopener">{{ channel.name }}</a>{% endfor %}</nav>{% else %}<p>已暂停新销售，已购权益与售后仍可使用。</p>{% endif %}<p>{{ course.support_text }}</p><a href="/access?course={{ course.slug }}">兑换已购课程</a><a href="/access/restore">恢复设备</a><h2>课程目录 · {{ course.version }}</h2><ol>{% for chapter in course.chapters %}<li>{{ chapter.title }}{% if chapter.free_preview %}<a href="/courses/{{ course.slug }}/chapters/{{ chapter.number }}">免费试学</a>{% endif %}</li>{% endfor %}</ol><p>{{ course.ai_disclosure }}</p><p>仅交付约定版本，不承诺永久访问或自动升级。</p></article>{% endblock %}
+{% block content %}
+<nav class="breadcrumbs" aria-label="面包屑"><a href="/">全部课程</a><span aria-hidden="true">/</span><span>{{ course.category }}</span></nav>
+<article class="course-detail">
+  <header class="detail-header"><div><span class="pill">{{ course.category }}</span><h1>{{ course.title }}</h1><p class="lead">{{ course.synopsis }}</p><div class="detail-meta"><span>{{ course.chapter_count }} 个章节</span><span>课程版本 {{ course.version }}</span></div></div><a class="button button-outline" href="#curriculum">浏览课程目录 <span aria-hidden="true">↓</span></a></header>
+  <div class="detail-layout">
+    <div class="detail-content"><section><h2>学完后你将能够</h2><ul class="outcome-list">{% for outcome in course.outcomes %}<li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>{{ outcome }}</li>{% endfor %}</ul></section>
+    <section id="curriculum"><div class="section-heading"><h2>课程目录</h2><span class="muted">{{ course.chapter_count }} 章</span></div><ol class="chapter-list">{% for chapter in course.chapters %}<li><span class="chapter-number">{{ '%02d'|format(loop.index) }}</span><div class="chapter-title">{{ chapter.title }}</div>{% if chapter.free_preview %}<a class="preview-link" href="/courses/{{ course.slug }}/chapters/{{ chapter.number }}">免费试学 <span aria-hidden="true">→</span></a>{% endif %}</li>{% endfor %}</ol></section></div>
+    <aside class="course-aside"><h2>这门课程适合你吗？</h2><dl><dt>适合人群</dt><dd>{{ course.audience }}</dd><dt>前置要求</dt><dd>{{ course.prerequisites }}</dd></dl>
+      {% if course.status == 'active' %}<nav class="purchase-actions" aria-label="店铺购买">{% for channel in course.channels %}<a class="button" href="{{ channel.url }}" rel="noopener">{{ channel.name }} <span aria-hidden="true">↗</span></a>{% endfor %}</nav>{% else %}<p class="callout">已暂停新销售，已购权益与售后仍可使用。</p>{% endif %}
+      <p class="support-copy">{{ course.support_text }}</p><a class="aside-link" href="/access?course={{ course.slug }}">兑换已购课程 <span aria-hidden="true">→</span></a><a class="aside-link" href="/access/restore">恢复设备 <span aria-hidden="true">→</span></a>
+    </aside>
+  </div><div class="disclosure"><p>{{ course.ai_disclosure }}</p><p>仅交付约定版本，不承诺永久访问或自动升级。</p></div>
+</article>
+{% endblock %}

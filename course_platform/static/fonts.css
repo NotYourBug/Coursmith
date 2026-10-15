@@ -1,0 +1,15 @@
+/* Open Font License files are retained alongside the self-hosted fonts. */
+@font-face {
+  font-family: "Manrope";
+  src: url("fonts/manrope.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Noto Serif SC";
+  src: url("fonts/noto-serif-sc-display.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 600 700;
+  font-display: swap;
+}

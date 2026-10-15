@@ -1,11 +1,6 @@
 {% extends "admin/base.html" %}
 {% block title %}管理员登录 · 智课工坊{% endblock %}
 {% block content %}
-<h1>管理员登录</h1>
-<form action="/admin/login" method="post" class="account-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label for="username">账号</label><input id="username" name="username" value="{{ username }}" maxlength="128" autocomplete="username" required>
-  <label for="password">密码</label><input id="password" type="password" name="password" maxlength="128" autocomplete="current-password" required>
-  <button type="submit">登录</button>
-</form>
+<div class="login-layout"><section class="login-story"><h2>好课程的背后，<br>是认真打磨的你。</h2><p>制作、审核、交付。<br>让知识从一份草稿，走向下一位学习者。</p><svg viewBox="0 0 280 160" aria-hidden="true"><path d="M35 45h85c20 0 20 15 20 15v80c0-15-25-20-105-20zM245 45h-85c-20 0-20 15-20 15v80c0-15 25-20 105-20zM55 70h45M55 87h45M180 70h45M180 87h45M205 18v14M198 25h14"/></svg><span>智课工坊 · 课程制作与运营</span></section>
+<section class="login-form-panel"><h1>管理员登录</h1><p>欢迎回来，继续你的课程工作。</p><form action="/admin/login" method="post" class="account-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="username">账号</label><input id="username" name="username" value="{{ username }}" maxlength="128" autocomplete="username" required placeholder="输入管理员账号"><label for="password">密码</label><input id="password" type="password" name="password" maxlength="128" autocomplete="current-password" required placeholder="输入登录密码"><button type="submit">登录</button></form><p class="login-note">仅供管理员使用。学习课程请前往<a href="/access">课程兑换页</a>。</p></section></div>
 {% endblock %}

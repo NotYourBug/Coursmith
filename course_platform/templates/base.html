@@ -3,13 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="智课工坊：在手机和电脑上都能顺畅学习的课程交付站">
+  <meta name="description" content="智课工坊：清晰的课程路径，专注的阅读体验。在手机和电脑上，按自己的节奏学习。">
+  <meta name="theme-color" content="#234b3e">
   <title>{% block title %}智课工坊课程站{% endblock %}</title>
-  <link rel="stylesheet" href="/static/site.css">
+  <link rel="icon" href="/static/brand.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/site.css?v=20261014">
 </head>
 <body>
-  <header class="site-header"><a class="brand" href="/">智课工坊</a><nav><a href="/">课程</a><a href="/access">兑换课程</a><a href="/help">帮助</a></nav></header>
-  <main class="shell">{% block content %}{% endblock %}</main>
-  <footer class="site-footer"><p>内容由人工审核后交付，部分课程内容由 AI 辅助生成。</p><a class="support" href="/help">联系支持</a></footer>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="site-header">
+    <a class="brand" href="/"><img src="/static/brand.svg" width="34" height="34" alt=""><span>智课工坊<small>Coursmith</small></span></a>
+    <nav aria-label="主导航">
+      <a href="/" {% if request.url.path == '/' or request.url.path.startswith('/courses') or request.url.path.startswith('/categories') %}aria-current="page"{% endif %}>探索课程</a>
+      <a href="/help" {% if request.url.path == '/help' %}aria-current="page"{% endif %}>学习帮助</a>
+      <a class="nav-access" href="/access" {% if request.url.path.startswith('/access') %}aria-current="page"{% endif %}>兑换课程 <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+  <main class="shell" id="main">{% block content %}{% endblock %}</main>
+  <footer class="site-footer">
+    <div><a class="footer-brand" href="/">智课工坊 <span>Coursmith</span></a><p>把知识学成可用能力。</p></div>
+    <div class="footer-meta"><p>内容由人工审核后交付，部分课程内容由 AI 辅助生成。</p><a href="/help">购买与售后</a><a href="/access/restore">恢复学习设备</a></div>
+  </footer>
 </body>
 </html>

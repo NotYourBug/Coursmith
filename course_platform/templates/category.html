@@ -1,3 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ category }}｜智课工坊{% endblock %}
-{% block content %}<section class="page-heading"><p class="eyebrow">CATEGORY</p><h1>{{ category }}</h1><p>从这一分类中挑选适合你的学习路径。</p></section><div class="card-grid">{% for course in courses %}<a class="course-card" href="/courses/{{ course.slug }}"><span class="pill">{{ course.category }}</span><h2>{{ course.title }}</h2><p>{{ course.synopsis }} · 版本 {{ course.version }}{% if course.status == 'paused' %} · 暂停新销售{% endif %}</p></a>{% endfor %}</div>{% endblock %}
+{% block content %}
+<nav class="breadcrumbs" aria-label="面包屑"><a href="/">全部课程</a><span aria-hidden="true">/</span><span>{{ category }}</span></nav>
+<section class="page-heading"><h1>{{ category }}</h1><p>从这一分类中挑选适合你的学习路径。</p></section>
+<div class="card-grid">{% for course in courses %}<a class="course-card" href="/courses/{{ course.slug }}"><div class="course-cover"><span>{{ course.category }}</span><svg viewBox="0 0 220 110" aria-hidden="true"><path d="M20 90 70 20l50 70 50-70 30 40M20 70l50-50 50 50 50-50 30 20"/></svg><span class="cover-version">v{{ course.version }}</span></div><div class="course-card-body"><span class="pill">{{ course.category }}</span><h2>{{ course.title }}</h2><p>{{ course.synopsis }}</p>{% if course.status == 'paused' %}<span class="paused-label">暂停新销售</span>{% endif %}<span class="card-bottom">了解课程 <span aria-hidden="true">↗</span></span></div></a>{% endfor %}</div>
+{% endblock %}

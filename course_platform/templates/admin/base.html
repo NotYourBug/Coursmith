@@ -1,35 +1,54 @@
+{% macro icon(name) -%}
+<svg viewBox="0 0 24 24" aria-hidden="true">{% if name == 'home' %}<path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/>{% elif name == 'book' %}<path d="M4 4h6c2 0 2 2 2 2v15c0-2-3-3-8-3zM20 4h-6c-2 0-2 2-2 2v15c0-2 3-3 8-3z"/>{% elif name == 'folder' %}<path d="M3 6h7l2 3h9v11H3z"/>{% elif name == 'tag' %}<path d="M3 3h8l10 10-8 8L3 11z"/><circle cx="7" cy="7" r="1"/>{% elif name == 'list' %}<path d="M8 5h13M8 12h13M8 19h13M3 5h1M3 12h1M3 19h1"/>{% elif name == 'code' %}<path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h4"/>{% elif name == 'clock' %}<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>{% elif name == 'key' %}<circle cx="8" cy="9" r="5"/><path d="m12 13 8 8m-3-3 3-3m-6 0 3-3"/>{% else %}<path d="M4 3h16v18H4zM8 8h8M8 12h8M8 16h5"/>{% endif %}</svg>
+{%- endmacro %}
+{% macro nav_link(url, label, symbol, exact=false) -%}
+{% set nav_path = url.path if url.path is defined else url %}
+<a href="{{ url }}" {% if (request.url.path.rstrip('/') == nav_path if exact else request.url.path.startswith(nav_path)) %}aria-current="page"{% endif %}>{{ icon(symbol) }}<span>{{ label }}</span></a>
+{%- endmacro %}
 <!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#234b3e">
   <title>{% block title %}管理后台 · 智课工坊{% endblock %}</title>
-  <link rel="stylesheet" href="/static/admin/admin.css">
+  <link rel="icon" href="/static/brand.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/admin/admin.css?v=20261014">
+  <script defer src="/static/admin/shell.js?v=20261014"></script>
   {% block production_resources %}{% if request.url.path.startswith('/admin/production') or request.url.path.startswith('/admin/jobs') %}
-  <link rel="stylesheet" href="/static/admin/production.css">
+  <link rel="stylesheet" href="/static/admin/production.css?v=20261014">
   <script type="module" src="/static/admin/production.js"></script>
   {% endif %}{% endblock %}
 </head>
-<body{% if request.url.path.startswith('/admin/production') or request.url.path.startswith('/admin/jobs') %} class="production-page"{% endif %}>
-  <header><a class="brand" href="/admin">智课工坊 · 管理后台</a>
-    {% if authenticated %}
-    <nav aria-label="后台导航"><a href="/admin">后台首页</a>{% if request.app.state.product_service is defined %}<a href="{{ request.url_for('product_list') }}">商品管理</a><a href="{{ request.url_for('category_list') }}">分类管理</a>{% endif %}{% if request.app.state.code_service is defined %}<a href="{{ request.url_for('code_batch_list') }}">发码批次</a>{% endif %}{% if request.app.state.order_service is defined %}<a href="{{ request.url_for('order_list') }}">店铺订单</a>{% endif %}{% if request.app.state.production_service is defined %}<a href="/admin/production">制作项目</a><a href="/admin/jobs">任务中心</a>{% endif %}<a href="/admin/account/password">修改密码</a></nav>
-    {% if request.app.state.legacy_service is defined %}<a href="{{ request.url_for('legacy_codes') }}">历史核验</a>{% endif %}
-    <form action="/admin/logout" method="post">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <input type="hidden" name="revision" value="{{ revision }}">
-      <button type="submit">退出登录</button>
-    </form>
-    {% endif %}
-  </header>
-  <main id="main">
-    {% if authenticated and request.app.state.order_service is defined %}<a href="/admin/audit">审计查询</a>{% endif %}
-    {% if error %}<div role="alert" class="error"><p>{{ error.message }}</p><p>关联 ID：{{ request_id }}</p></div>{% endif %}
-    {% block content %}
-    <h1>管理后台</h1><p>已登录 owner 账号，可通过后台导航管理已提供的功能。</p>
-    {% if request.app.state.order_service is defined %}<p>通过店铺订单登记、交付及核验外部退款；权益售后从订单或批次详情进入。</p>{% else %}<section><h2>后续阶段</h2><p>订单及权益管理将在后续阶段提供。</p></section>{% endif %}
-    {% endblock %}
-  </main>
-  <footer>智课工坊 · 单 owner 管理</footer>
+<body class="{{ 'admin-authenticated' if authenticated else 'admin-guest' }}{% if request.url.path.startswith('/admin/production') or request.url.path.startswith('/admin/jobs') %} production-page{% endif %}">
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  {% if authenticated %}
+  <aside class="admin-sidebar">
+    <a class="brand" href="/admin"><img src="/static/brand.svg" width="36" height="36" alt=""><span>智课工坊<small>Coursmith workspace</small></span></a>
+    <details class="sidebar-menu" open>
+      <summary>工作区导航 <span aria-hidden="true">⌄</span></summary>
+      <nav aria-label="后台导航">
+        {{ nav_link('/admin', '后台首页', 'home', true) }}
+        {% if request.app.state.production_service is defined %}<span class="nav-group">课程制作</span>{{ nav_link('/admin/production', '制作项目', 'book') }}{{ nav_link('/admin/jobs', '任务中心', 'clock') }}{% endif %}
+        <span class="nav-group">店铺运营</span>
+        {% if request.app.state.product_service is defined %}{{ nav_link(request.url_for('product_list'), '商品管理', 'tag') }}{{ nav_link(request.url_for('category_list'), '分类管理', 'folder') }}{% endif %}
+        {% if request.app.state.code_service is defined %}{{ nav_link(request.url_for('code_batch_list'), '发码批次', 'code') }}{% endif %}
+        {% if request.app.state.order_service is defined %}{{ nav_link(request.url_for('order_list'), '店铺订单', 'list') }}{{ nav_link('/admin/audit', '审计查询', 'audit') }}{% endif %}
+        <span class="nav-group">账号与核验</span>
+        {% if request.app.state.legacy_service is defined %}{{ nav_link(request.url_for('legacy_codes'), '历史核验', 'audit') }}{% endif %}
+        {{ nav_link('/admin/account/password', '修改密码', 'key') }}
+      </nav>
+    </details>
+    <div class="sidebar-bottom"><a href="/" target="_blank" rel="noopener">查看学习网站 <span aria-hidden="true">↗</span></a><div class="owner-row"><span class="owner-avatar" aria-hidden="true">C</span><div><strong>Owner</strong><small>管理员工作区</small></div><form action="/admin/logout" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ revision }}"><button type="submit">退出登录</button></form></div></div>
+  </aside>
+  {% endif %}
+  <div class="admin-workspace">
+    <header class="admin-topbar">{% if authenticated %}<span>工作区 <span class="topbar-divider">/</span> {% if request.url.path.startswith('/admin/production') %}课程制作{% elif request.url.path.startswith('/admin/jobs') %}任务中心{% elif request.url.path.startswith('/admin/products') %}商品管理{% elif request.url.path.startswith('/admin/orders') %}店铺订单{% else %}课程运营{% endif %}</span><a href="/help" target="_blank" rel="noopener">使用帮助 <span aria-hidden="true">↗</span></a>{% else %}<a class="brand" href="/"><img src="/static/brand.svg" width="34" height="34" alt=""><span>智课工坊<small>Coursmith</small></span></a><a href="/">返回学习网站 <span aria-hidden="true">↗</span></a>{% endif %}</header>
+    <main id="main" class="admin-main">
+      {% if error %}<div role="alert" class="error"><p>{{ error.message }}</p><p>关联 ID：{{ request_id }}</p></div>{% endif %}
+      {% block content %}<h1>管理后台</h1><p>已登录 owner 账号，可通过后台导航管理已提供的功能。</p>{% if request.app.state.order_service is defined %}<p>通过店铺订单登记、交付及核验外部退款；权益售后从订单或批次详情进入。</p>{% else %}<section><h2>后续阶段</h2><p>订单及权益管理将在后续阶段提供。</p></section>{% endif %}{% endblock %}
+    </main>
+    <footer class="admin-footer"><span>智课工坊 · 认真制作，清晰交付。</span><span>单 owner 管理</span></footer>
+  </div>
 </body>
 </html>
